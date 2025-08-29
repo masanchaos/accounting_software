@@ -1,0 +1,473 @@
+body {
+    background-color: #f8f9fa;
+}
+
+.sidebar {
+    width: 250px;
+    background-color: #343a40;
+    color: white;
+    min-height: 100vh;
+}
+
+.sidebar .nav-link {
+    color: #adb5bd;
+    padding: 10px 20px;
+}
+
+.sidebar .nav-link:hover {
+    color: white;
+    background-color: #495057;
+}
+
+.sidebar .nav-link.active {
+    color: white;
+    background-color: #0d6efd;
+}
+
+.main-content {
+    flex-grow: 1;
+    padding: 30px;
+}
+
+.view {
+    animation: fadeIn 0.5s;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* 修復選擇器顯示問題 */
+select.form-select {
+    background-color: white !important;
+    color: black !important;
+    border: 1px solid #ced4da !important;
+    padding: 0.375rem 2.25rem 0.375rem 0.75rem !important;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23343a40' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e") !important;
+    background-repeat: no-repeat !important;
+    background-position: right 0.75rem center !important;
+    background-size: 16px 12px !important;
+    min-height: 38px !important;
+}
+
+select.form-select:focus {
+    border-color: #86b7fe !important;
+    outline: 0 !important;
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25) !important;
+}
+
+select.form-select option {
+    background-color: white !important;
+    color: black !important;
+    padding: 5px !important;
+}
+
+/* 修復報表輸入框 */
+#reportInput {
+    background-color: white !important;
+    color: black !important;
+    border: 1px solid #ced4da !important;
+}
+
+.customer-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.customer-item.deactivated span {
+    text-decoration: line-through;
+    color: #6c757d;
+}
+
+.customer-lists {
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.actions button {
+    margin-left: 5px;
+}
+
+/* 互動式對帳列表樣式 */
+.status-item {
+    display: flex;
+    align-items: center;
+    padding: 12px;
+    border-bottom: 1px solid #eee;
+}
+
+.status-item.reconcilable-customer {
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.status-item.reconcilable-customer:hover {
+    background-color: #e9ecef;
+}
+
+.status-item.reconcilable-customer.active {
+    background-color: #dbeafe;
+    font-weight: bold;
+}
+
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 15px;
+}
+
+.status-indicator.reconciled {
+    background-color: #198754; /* 綠色 */
+}
+
+.status-indicator.pending {
+    background-color: #ffc107; /* 黃色 */
+}
+
+.error {
+    color: #dc3545;
+}
+
+/* 帳單明細表格 */
+.line-item-details-row {
+    display: none;
+}
+
+.bill-row.active {
+    background-color: #f8f9fa;
+}
+
+.line-item-details-cell {
+    padding: 20px !important;
+    background-color: #f8f9fa;
+}
+
+.inner-table {
+    width: 100%;
+    background-color: white;
+}
+
+/* 統計資訊表格樣式 */
+.alert table.table-sm {
+    margin: 0;
+}
+
+.alert table.table-sm td {
+    padding: 0.25rem 0.5rem;
+    border: none;
+}
+
+.alert table.table-sm td:first-child {
+    width: 150px;
+    font-weight: normal;
+}
+
+.alert table.table-sm td:last-child {
+    font-weight: bold;
+}
+
+/* 提示框樣式改進 */
+.alert h5 {
+    margin-bottom: 1rem;
+    font-weight: bold;
+}
+
+.alert.alert-success {
+    border-left: 4px solid #198754;
+}
+
+.alert.alert-warning {
+    border-left: 4px solid #ffc107;
+}
+
+.alert.alert-info {
+    border-left: 4px solid #0dcaf0;
+}
+
+.alert.alert-danger {
+    border-left: 4px solid #dc3545;
+}
+
+/* 歷史帳單表格樣式 */
+.table td.text-primary {
+    color: #0d6efd !important;
+    font-weight: 600;
+}
+
+.table td.text-info {
+    color: #0dcaf0 !important;
+    font-weight: 600;
+}
+
+/* 各Tab統計樣式 */
+.alert .mb-2 {
+    padding: 0.5rem;
+    background: rgba(255, 255, 255, 0.5);
+    border-radius: 0.25rem;
+    margin-bottom: 0.5rem !important;
+}
+
+.alert .mb-2:last-child {
+    margin-bottom: 0 !important;
+}
+
+.alert .mb-2 ul {
+    margin: 0;
+    padding-left: 1.5rem;
+}
+
+/* Tab 明細樣式 */
+.nav-tabs .nav-link {
+    color: #495057;
+    border: 1px solid transparent;
+    cursor: pointer;
+}
+
+.nav-tabs .nav-link:hover {
+    border-color: #e9ecef #e9ecef #dee2e6;
+    background-color: #f8f9fa;
+}
+
+.nav-tabs .nav-link.active {
+    color: #495057;
+    background-color: #fff;
+    border-color: #dee2e6 #dee2e6 #fff;
+    font-weight: 600;
+}
+
+.nav-tabs .badge {
+    margin-left: 5px;
+    font-size: 0.75rem;
+}
+
+.tab-content {
+    min-height: 200px;
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-top: none;
+    padding: 1rem;
+}
+
+.tab-content table {
+    margin-bottom: 0;
+}
+
+.tab-content .table-info {
+    background-color: #cfe2ff;
+    font-weight: bold;
+}
+
+.tab-content table th {
+    position: sticky;
+    top: 0;
+    background-color: #f8f9fa;
+    z-index: 10;
+}
+
+.tab-content .text-muted {
+    text-align: center;
+    font-style: italic;
+}
+
+/* Tab內容區塊樣式 */
+.card-header-tabs {
+    margin-bottom: 0;
+}
+
+.tab-pane table {
+    font-size: 0.9rem;
+}
+
+.tab-pane table td {
+    vertical-align: middle;
+}
+
+.tab-pane table .text-end {
+    text-align: right;
+}
+
+/* Tab 明細樣式 - 添加到 style.css 文件末尾 */
+.nav-tabs .nav-link {
+    color: #495057;
+    border: 1px solid transparent;
+    cursor: pointer;
+}
+
+.nav-tabs .nav-link:hover {
+    border-color: #e9ecef #e9ecef #dee2e6;
+    background-color: #f8f9fa;
+}
+
+.nav-tabs .nav-link.active {
+    color: #495057;
+    background-color: #fff;
+    border-color: #dee2e6 #dee2e6 #fff;
+    font-weight: 600;
+}
+
+.nav-tabs .badge {
+    margin-left: 5px;
+    font-size: 0.75rem;
+}
+
+.tab-content {
+    min-height: 200px;
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-top: none;
+    padding: 1rem;
+}
+
+.tab-content table {
+    margin-bottom: 0;
+}
+
+.tab-content .table-info {
+    background-color: #cfe2ff;
+    font-weight: bold;
+}
+
+.tab-content table th {
+    position: sticky;
+    top: 0;
+    background-color: #f8f9fa;
+    z-index: 10;
+}
+
+.tab-content .text-muted {
+    text-align: center;
+    font-style: italic;
+}
+
+/* Tab內容區塊樣式 */
+.card-header-tabs {
+    margin-bottom: 0;
+}
+
+.tab-pane table {
+    font-size: 0.9rem;
+}
+
+.tab-pane table td {
+    vertical-align: middle;
+}
+
+.tab-pane table .text-end {
+    text-align: right;
+}
+
+/* Tab統計卡片樣式 */
+.card.bg-light {
+    background-color: #f8f9fa !important;
+    border: 1px solid #dee2e6;
+}
+
+.card.bg-light .card-body {
+    padding: 1rem;
+}
+
+.card.bg-light .card-title {
+    color: #495057;
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+/* Tab 明細樣式 - 添加到 style.css 文件末尾 */
+.nav-tabs .nav-link {
+    color: #495057;
+    border: 1px solid transparent;
+    cursor: pointer;
+}
+
+.nav-tabs .nav-link:hover {
+    border-color: #e9ecef #e9ecef #dee2e6;
+    background-color: #f8f9fa;
+}
+
+.nav-tabs .nav-link.active {
+    color: #495057;
+    background-color: #fff;
+    border-color: #dee2e6 #dee2e6 #fff;
+    font-weight: 600;
+}
+
+.nav-tabs .badge {
+    margin-left: 5px;
+    font-size: 0.75rem;
+}
+
+.tab-content {
+    min-height: 200px;
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-top: none;
+    padding: 1rem;
+}
+
+.tab-content table {
+    margin-bottom: 0;
+}
+
+.tab-content .table-info {
+    background-color: #cfe2ff;
+    font-weight: bold;
+}
+
+.tab-content table th {
+    position: sticky;
+    top: 0;
+    background-color: #f8f9fa;
+    z-index: 10;
+}
+
+.tab-content .text-muted {
+    text-align: center;
+    font-style: italic;
+}
+
+/* Tab內容區塊樣式 */
+.card-header-tabs {
+    margin-bottom: 0;
+}
+
+.tab-pane table {
+    font-size: 0.9rem;
+}
+
+.tab-pane table td {
+    vertical-align: middle;
+}
+
+.tab-pane table .text-end {
+    text-align: right;
+}
+
+/* 多選刪除相關樣式 */
+.bill-checkbox {
+    cursor: pointer;
+}
+
+.bill-row td:not(:first-child):not(:last-child) {
+    cursor: pointer;
+}
+
+#selectAllBills {
+    cursor: pointer;
+}
+
+#deleteSelectedBtn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.form-check-input:indeterminate {
+    background-color: #0d6efd;
+    border-color: #0d6efd;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='M6 10h8'/%3e%3c/svg%3e");
+}
