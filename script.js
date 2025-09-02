@@ -2,33 +2,47 @@ const API_URL = 'http://127.0.0.1:5000';
 let allCustomers = [], allItems = [], currentReportData = null;
 let sortColumn = 'name', sortDirection = 'asc';
 
-// Tab切換函數 - 手動實現不依賴Bootstrap
+// 內聯編輯相關變數
+let currentEditingElement = null;
+let originalCategoryValue = null;
+let editingItemOriginal = null;
+
+// Tab切換函數（通用版本，同時支援各種Tab）
 function switchTab(event, tabId) {
     event.preventDefault();
+    event.stopPropagation();
+    
+    console.log('切換到Tab:', tabId);
     
     // 找到父容器
     const container = event.target.closest('.card');
-    if (!container) return;
+    if (!container) {
+        console.error('找不到Tab容器');
+        return;
+    }
     
-    // 移除所有active類
-    container.querySelectorAll('.nav-link').forEach(link => {
-        link.classList.remove('active');
+    // 移除所有Tab按鈕的active類
+    container.querySelectorAll('.nav-link').forEach(btn => {
+        btn.classList.remove('active');
     });
     
-    // 隱藏所有tab內容
+    // 隱藏所有Tab內容
     container.querySelectorAll('.tab-pane').forEach(pane => {
         pane.style.display = 'none';
         pane.classList.remove('show', 'active');
     });
     
-    // 激活當前tab按鈕
+    // 激活當前Tab按鈕
     event.target.classList.add('active');
     
-    // 顯示對應的tab內容
+    // 顯示對應的Tab內容
     const targetPane = document.getElementById(tabId);
     if (targetPane) {
         targetPane.style.display = 'block';
         targetPane.classList.add('show', 'active');
+        console.log('Tab已切換到:', tabId);
+    } else {
+        console.error('找不到目標Tab內容:', tabId);
     }
 }
 
@@ -153,7 +167,7 @@ async function fetchAndRenderCustomers() {
         const itemDiv = document.createElement('div');
         itemDiv.className = 'customer-item deactivated';
         itemDiv.innerHTML = `<span>${customer.name}</span><div class="actions"><button class="btn btn-sm btn-success" onclick="reactivateCustomer(${customer.id}, '${customer.name}')">啟用</button><button class="btn btn-sm btn-danger" onclick="deleteCustomer(${customer.id}, '${customer.name}')">刪除</button></div>`;
-        deactivatedList.appendChild(listItem);
+        deactivatedList.appendChild(itemDiv);
     });
 }
 
@@ -177,13 +191,336 @@ function sortTable(column, isInitialLoad = false) {
     updateSortArrows();
 }
 
+// 更新的表格渲染函數 - 支援內聯編輯
 function renderItemsTable() {
     const tableBody = document.getElementById('itemTableBody');
     tableBody.innerHTML = '';
+    
     allItems.forEach(item => {
         const row = tableBody.insertRow();
-        row.innerHTML = `<td>${item.name}</td><td>${item.category}</td><td class="actions"><button class="btn btn-sm btn-info" onclick="editItem(${item.id}, '${item.name}', '${item.category}')">修改</button><button class="btn btn-sm btn-danger" onclick="deleteItem(${item.id})">刪除</button></td>`;
+        
+        // 項目名稱列 - 可點擊編輯
+        const nameCell = row.insertCell(0);
+        nameCell.innerHTML = `
+            <div class="d-flex align-items-center">
+                <span class="item-name" onclick="editItemName(${item.id}, '${item.name}', this)" 
+                      style="cursor: pointer; min-width: 100px;" 
+                      title="點擊修改名稱">
+                    ${item.name}
+                </span>
+            </div>`;
+        
+        // 歸屬列 - 可點擊編輯
+        const categoryCell = row.insertCell(1);
+        const categoryBadgeClass = item.category === '總公司' ? 'bg-primary' : 'bg-info';
+        categoryCell.innerHTML = `
+            <span class="badge ${categoryBadgeClass} category-badge" 
+                  onclick="editItemCategory(${item.id}, '${item.category}', this)" 
+                  style="cursor: pointer; min-width: 80px;" 
+                  title="點擊修改歸屬"
+                  data-item-id="${item.id}" 
+                  data-current-category="${item.category}">
+                ${item.category}
+            </span>`;
+        
+        // 操作按鈕列
+        const actionsCell = row.insertCell(2);
+        actionsCell.className = 'actions';
+        actionsCell.innerHTML = `
+            <button class="btn btn-sm btn-info me-1" 
+                    onclick="editItem(${item.id}, '${item.name}', '${item.category}')"
+                    title="編輯項目">
+                修改
+            </button>
+            <button class="btn btn-sm btn-danger" 
+                    onclick="deleteItem(${item.id})"
+                    title="刪除項目">
+                刪除
+            </button>`;
     });
+}
+
+// 內聯編輯歸屬功能
+function editItemCategory(itemId, currentCategory, element) {
+    // 如果已經有正在編輯的元素，先取消它
+    if (currentEditingElement) {
+        cancelCategoryEdit();
+    }
+    
+    // 保存當前編輯狀態
+    currentEditingElement = element;
+    originalCategoryValue = currentCategory;
+    
+    // 創建下拉選擇框
+    const select = document.createElement('select');
+    select.className = 'form-select form-select-sm';
+    select.style.minWidth = '100px';
+    
+    // 添加選項
+    const options = [
+        { value: '總公司', text: '總公司' },
+        { value: '分公司', text: '分公司' }
+    ];
+    
+    options.forEach(option => {
+        const optionElement = document.createElement('option');
+        optionElement.value = option.value;
+        optionElement.textContent = option.text;
+        optionElement.selected = option.value === currentCategory;
+        select.appendChild(optionElement);
+    });
+    
+    // 替換原始元素
+    element.style.display = 'none';
+    element.parentNode.appendChild(select);
+    
+    // 聚焦到選擇框
+    select.focus();
+    
+    // 添加事件監聽器
+    select.addEventListener('change', function() {
+        saveCategoryChange(itemId, this.value, element, select);
+    });
+    
+    select.addEventListener('blur', function() {
+        // 延遲取消，允許change事件先觸發
+        setTimeout(() => {
+            if (currentEditingElement === element) {
+                cancelCategoryEdit();
+            }
+        }, 150);
+    });
+    
+    select.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            saveCategoryChange(itemId, this.value, element, select);
+        } else if (e.key === 'Escape') {
+            cancelCategoryEdit();
+        }
+    });
+}
+
+// 保存歸屬修改
+async function saveCategoryChange(itemId, newCategory, badgeElement, selectElement) {
+    if (newCategory === originalCategoryValue) {
+        // 沒有變化，直接取消編輯
+        cancelCategoryEdit();
+        return;
+    }
+    
+    try {
+        // 禁用選擇框，顯示載入狀態
+        selectElement.disabled = true;
+        selectElement.style.opacity = '0.6';
+        
+        // 獲取項目資訊
+        const item = allItems.find(item => item.id === itemId);
+        if (!item) {
+            throw new Error('找不到項目資訊');
+        }
+        
+        // 發送更新請求
+        const response = await fetch(`${API_URL}/items/${itemId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: item.name, category: newCategory })
+        });
+        
+        if (response.ok) {
+            // 更新成功，更新本地數據和界面
+            item.category = newCategory;
+            
+            // 更新徽章
+            const newBadgeClass = newCategory === '總公司' ? 'bg-primary' : 'bg-info';
+            badgeElement.className = `badge ${newBadgeClass} category-badge`;
+            badgeElement.textContent = newCategory;
+            badgeElement.setAttribute('data-current-category', newCategory);
+            
+            // 顯示成功提示
+            showToast(`項目「${item.name}」歸屬已修改為「${newCategory}」`, 'success');
+            
+            // 取消編輯狀態
+            cancelCategoryEdit();
+            
+        } else {
+            const error = await response.json();
+            throw new Error(error.error || '修改失敗');
+        }
+        
+    } catch (error) {
+        console.error('修改項目歸屬時發生錯誤:', error);
+        showToast(`修改失敗：${error.message}`, 'danger');
+        
+        // 恢復編輯狀態
+        selectElement.disabled = false;
+        selectElement.style.opacity = '1';
+        selectElement.focus();
+    }
+}
+
+// 取消歸屬編輯
+function cancelCategoryEdit() {
+    if (currentEditingElement) {
+        // 移除選擇框
+        const select = currentEditingElement.parentNode.querySelector('select');
+        if (select) {
+            select.remove();
+        }
+        
+        // 顯示原始徽章
+        currentEditingElement.style.display = 'inline-block';
+        
+        // 重置狀態
+        currentEditingElement = null;
+        originalCategoryValue = null;
+    }
+}
+
+// 內聯編輯項目名稱功能
+function editItemName(itemId, currentName, element) {
+    // 如果已經有正在編輯的元素，先取消它
+    if (currentEditingElement) {
+        cancelCategoryEdit();
+    }
+    
+    // 創建輸入框
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'form-control form-control-sm';
+    input.value = currentName;
+    input.style.minWidth = '150px';
+    
+    // 替換原始元素
+    element.style.display = 'none';
+    element.parentNode.appendChild(input);
+    
+    // 選中文本並聚焦
+    input.select();
+    input.focus();
+    
+    // 添加事件監聽器
+    input.addEventListener('blur', function() {
+        saveNameChange(itemId, this.value.trim(), currentName, element, input);
+    });
+    
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            saveNameChange(itemId, this.value.trim(), currentName, element, input);
+        } else if (e.key === 'Escape') {
+            // 取消編輯
+            input.remove();
+            element.style.display = 'inline-block';
+        }
+    });
+}
+
+// 保存名稱修改
+async function saveNameChange(itemId, newName, originalName, nameElement, inputElement) {
+    if (!newName) {
+        showToast('項目名稱不能為空', 'warning');
+        inputElement.focus();
+        return;
+    }
+    
+    if (newName === originalName) {
+        // 沒有變化，取消編輯
+        inputElement.remove();
+        nameElement.style.display = 'inline-block';
+        return;
+    }
+    
+    // 檢查重複名稱
+    const existingItem = allItems.find(item => item.name === newName && item.id !== itemId);
+    if (existingItem) {
+        showToast('此項目名稱已存在', 'warning');
+        inputElement.focus();
+        return;
+    }
+    
+    try {
+        // 禁用輸入框
+        inputElement.disabled = true;
+        inputElement.style.opacity = '0.6';
+        
+        // 獲取項目資訊
+        const item = allItems.find(item => item.id === itemId);
+        if (!item) {
+            throw new Error('找不到項目資訊');
+        }
+        
+        // 發送更新請求
+        const response = await fetch(`${API_URL}/items/${itemId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName, category: item.category })
+        });
+        
+        if (response.ok) {
+            // 更新成功
+            item.name = newName;
+            nameElement.textContent = newName;
+            nameElement.setAttribute('onclick', `editItemName(${itemId}, '${newName}', this)`);
+            
+            showToast(`項目名稱已修改為「${newName}」`, 'success');
+            
+            // 移除輸入框，顯示新名稱
+            inputElement.remove();
+            nameElement.style.display = 'inline-block';
+            
+        } else {
+            const error = await response.json();
+            throw new Error(error.error || '修改失敗');
+        }
+        
+    } catch (error) {
+        console.error('修改項目名稱時發生錯誤:', error);
+        showToast(`修改失敗：${error.message}`, 'danger');
+        
+        // 恢復輸入框
+        inputElement.disabled = false;
+        inputElement.style.opacity = '1';
+        inputElement.focus();
+    }
+}
+
+// 改進的Toast提示函數
+function showToast(message, type = 'info') {
+    // 移除現有的toast
+    const existingToasts = document.querySelectorAll('.toast-notification');
+    existingToasts.forEach(toast => toast.remove());
+    
+    // 創建新的toast
+    const toast = document.createElement('div');
+    toast.className = `alert alert-${type} alert-dismissible fade show position-fixed toast-notification`;
+    toast.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);';
+    
+    // 圖標映射
+    const icons = {
+        success: '✓',
+        danger: '✗',
+        warning: '⚠',
+        info: 'ℹ'
+    };
+    
+    const icon = icons[type] || icons.info;
+    
+    toast.innerHTML = `
+        <div class="d-flex align-items-center">
+            <span class="me-2">${icon}</span>
+            <span>${message}</span>
+            <button type="button" class="btn-close ms-auto" onclick="this.parentElement.parentElement.remove()"></button>
+        </div>
+    `;
+    
+    document.body.appendChild(toast);
+    
+    // 3秒後自動移除
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.classList.remove('show');
+            setTimeout(() => toast.remove(), 150);
+        }
+    }, 3000);
 }
 
 function updateSortArrows() {
@@ -203,23 +540,23 @@ async function addCustomer() {
 }
 
 async function deleteCustomer(id, name) {
-    const password = prompt(`即將永久刪除客戶【${name}】！此操作無法復原，請輸入刪除密碼：`);
+    const password = prompt(`即將永久刪除客戶「${name}」！此操作無法復原，請輸入刪除密碼：`);
     if (password === null) return;
     if (!password) { alert("密碼不能為空！"); return; }
     const response = await fetch(`${API_URL}/customers/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: password }) });
-    if (response.ok) { alert(`客戶【${name}】已成功刪除。`); await fetchAndRenderCustomers(); }
+    if (response.ok) { alert(`客戶「${name}」已成功刪除。`); await fetchAndRenderCustomers(); }
     else { const result = await response.json(); alert(`刪除失敗：${result.error}`); }
 }
 
 async function deactivateCustomer(id, name) {
-    if (confirm(`確定要停用客戶【${name}】嗎？`)) {
+    if (confirm(`確定要停用客戶「${name}」嗎？`)) {
         await fetch(`${API_URL}/customers/${id}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: false }) });
         await fetchAndRenderCustomers();
     }
 }
 
 async function reactivateCustomer(id, name) {
-    if (confirm(`確定要重新啟用客戶【${name}】嗎？`)) {
+    if (confirm(`確定要重新啟用客戶「${name}」嗎？`)) {
         await fetch(`${API_URL}/customers/${id}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: true }) });
         await fetchAndRenderCustomers();
     }
@@ -238,17 +575,179 @@ async function addItem() {
     fetchAndRenderItems();
 }
 
+// 模態框版本的editItem函數（保留作為備用選項）
 async function editItem(id, currentName, currentCategory) {
-    const newName = prompt('請輸入新的項目名稱：', currentName);
-    if (newName === null) return;
-    const newCategory = prompt('請輸入新的歸屬 (總公司/分公司)：', currentCategory);
-    if (newCategory === null || !['總公司', '分公司'].includes(newCategory)) {
-        alert('歸屬必須是 "總公司" 或 "分公司"');
+    // 保存原始數據
+    editingItemOriginal = { name: currentName, category: currentCategory };
+    
+    // 設置模態框內容
+    document.getElementById('editItemId').value = id;
+    document.getElementById('editItemName').value = currentName;
+    document.getElementById('editItemCategory').value = currentCategory;
+    
+    // 顯示當前項目資訊
+    document.getElementById('originalItemName').textContent = currentName;
+    const categoryBadge = document.getElementById('originalItemCategory');
+    categoryBadge.textContent = currentCategory;
+    categoryBadge.className = currentCategory === '總公司' ? 'badge bg-primary' : 'badge bg-info';
+    
+    // 重置驗證狀態
+    resetEditItemValidation();
+    
+    // 顯示模態框
+    const modal = new bootstrap.Modal(document.getElementById('editItemModal'));
+    modal.show();
+}
+
+// 重置編輯表單驗證狀態
+function resetEditItemValidation() {
+    const form = document.getElementById('editItemForm');
+    const inputs = form.querySelectorAll('.form-control, .form-select');
+    
+    inputs.forEach(input => {
+        input.classList.remove('is-invalid');
+    });
+    
+    // 隱藏對比區域
+    document.getElementById('editItemComparison').style.display = 'none';
+    document.getElementById('nameComparisonRow').style.display = 'none';
+    document.getElementById('categoryComparisonRow').style.display = 'none';
+}
+
+// 驗證編輯表單並顯示對比
+function validateEditItemForm() {
+    const itemId = parseInt(document.getElementById('editItemId').value);
+    const itemName = document.getElementById('editItemName').value.trim();
+    const itemCategory = document.getElementById('editItemCategory').value;
+    
+    let isValid = true;
+    
+    // 驗證項目名稱
+    const nameInput = document.getElementById('editItemName');
+    const nameError = document.getElementById('editItemNameError');
+    
+    if (!itemName) {
+        nameInput.classList.add('is-invalid');
+        nameError.textContent = '項目名稱不能為空！';
+        isValid = false;
+    } else {
+        // 檢查重複名稱（排除自己）
+        const existingItem = allItems.find(item => item.name === itemName && item.id !== itemId);
+        if (existingItem) {
+            nameInput.classList.add('is-invalid');
+            nameError.textContent = '此項目名稱已存在！';
+            isValid = false;
+        } else {
+            nameInput.classList.remove('is-invalid');
+        }
+    }
+    
+    // 驗證項目歸屬
+    const categorySelect = document.getElementById('editItemCategory');
+    const categoryError = document.getElementById('editItemCategoryError');
+    
+    if (!itemCategory) {
+        categorySelect.classList.add('is-invalid');
+        categoryError.textContent = '請選擇項目歸屬！';
+        isValid = false;
+    } else {
+        categorySelect.classList.remove('is-invalid');
+    }
+    
+    // 顯示修改對比
+    if (isValid && editingItemOriginal) {
+        const nameChanged = itemName !== editingItemOriginal.name;
+        const categoryChanged = itemCategory !== editingItemOriginal.category;
+        const hasChanges = nameChanged || categoryChanged;
+        
+        if (hasChanges) {
+            // 顯示對比區域
+            document.getElementById('editItemComparison').style.display = 'block';
+            
+            // 名稱對比
+            if (nameChanged) {
+                document.getElementById('nameComparisonRow').style.display = 'table-row';
+                document.getElementById('nameOld').textContent = editingItemOriginal.name;
+                document.getElementById('nameNew').textContent = itemName;
+            } else {
+                document.getElementById('nameComparisonRow').style.display = 'none';
+            }
+            
+            // 歸屬對比
+            if (categoryChanged) {
+                document.getElementById('categoryComparisonRow').style.display = 'table-row';
+                document.getElementById('categoryOld').textContent = editingItemOriginal.category;
+                document.getElementById('categoryNew').textContent = itemCategory;
+            } else {
+                document.getElementById('categoryComparisonRow').style.display = 'none';
+            }
+        } else {
+            document.getElementById('editItemComparison').style.display = 'none';
+        }
+    }
+    
+    return isValid;
+}
+
+// 保存編輯
+async function saveEditItem() {
+    if (!validateEditItemForm()) return;
+    
+    const itemId = parseInt(document.getElementById('editItemId').value);
+    const itemName = document.getElementById('editItemName').value.trim();
+    const itemCategory = document.getElementById('editItemCategory').value;
+    
+    // 檢查是否有修改
+    const nameChanged = itemName !== editingItemOriginal.name;
+    const categoryChanged = itemCategory !== editingItemOriginal.category;
+    const hasChanges = nameChanged || categoryChanged;
+    
+    if (!hasChanges) {
+        alert('沒有任何修改！');
         return;
     }
-    if (newName.trim()) {
-        await fetch(`${API_URL}/items/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newName.trim(), category: newCategory }) });
-        fetchAndRenderItems();
+    
+    const saveBtn = document.getElementById('saveEditItem');
+    const originalText = saveBtn.textContent;
+    
+    try {
+        saveBtn.disabled = true;
+        saveBtn.textContent = '保存中...';
+        
+        const response = await fetch(`${API_URL}/items/${itemId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: itemName, category: itemCategory })
+        });
+        
+        if (response.ok) {
+            // 構建成功消息
+            let successMessage = '項目修改成功！\n\n';
+            if (nameChanged) {
+                successMessage += `✓ 名稱：${editingItemOriginal.name} → ${itemName}\n`;
+            }
+            if (categoryChanged) {
+                successMessage += `✓ 歸屬：${editingItemOriginal.category} → ${itemCategory}`;
+            }
+            
+            alert(successMessage);
+            
+            // 關閉模態框
+            const modal = bootstrap.Modal.getInstance(document.getElementById('editItemModal'));
+            modal.hide();
+            
+            // 重新載入項目列表
+            fetchAndRenderItems();
+        } else {
+            const error = await response.json();
+            alert(`修改失敗：${error.error || '未知錯誤'}`);
+        }
+    } catch (error) {
+        console.error('修改項目時發生錯誤:', error);
+        alert('修改項目時發生網路錯誤！');
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = originalText;
     }
 }
 
@@ -259,9 +758,9 @@ async function deleteItem(id) {
     }
 }
 
-// 建立Tab明細HTML的輔助函數
-function createTabDetailsHTML(items) {
-    if (!items || items.length === 0) {
+// 創建Tab詳細HTML函數
+function createTabDetailsHTML(items, isDeduction = false) {
+    if (!items || !Array.isArray(items) || items.length === 0) {
         return '<p class="text-muted p-3">此分類無資料</p>';
     }
     
@@ -279,25 +778,74 @@ function createTabDetailsHTML(items) {
             <tbody>`;
     
     let subtotal = 0;
+    
     items.forEach(item => {
-        const price = item.total_price || 0;
-        subtotal += price;
+        if (!item) return;
+        
+        const itemName = item.item_name || '未知項目';
+        let unitPrice = item.unit_price || '';
+        const quantity = item.quantity || '';
+        let totalPrice = parseFloat(item.total_price) || 0;
+        const remark = item.remark || '';
+        
+        // 如果是應退款tab，處理負數顯示
+        if (isDeduction) {
+            if (totalPrice > 0) {
+                totalPrice = -totalPrice;
+            }
+            
+            if (unitPrice && !unitPrice.toString().startsWith('-') && !unitPrice.toString().startsWith('$-')) {
+                if (unitPrice.toString().startsWith('$')) {
+                    unitPrice = '$-' + unitPrice.substring(1);
+                } else {
+                    unitPrice = '-' + unitPrice;
+                }
+            }
+        }
+        
+        subtotal += totalPrice;
+        
+        let priceDisplay;
+        let priceClass = '';
+        
+        if (totalPrice < 0) {
+            priceDisplay = `-$${Math.abs(totalPrice).toFixed(2)}`;
+            priceClass = 'text-danger';
+        } else {
+            priceDisplay = `$${totalPrice.toFixed(2)}`;
+        }
+        
+        let unitPriceDisplay = unitPrice;
+        if (isDeduction || (unitPrice && unitPrice.toString().includes('-'))) {
+            unitPriceDisplay = `<span class="text-danger">${unitPrice}</span>`;
+        }
+        
         html += `
             <tr>
-                <td>${item.item_name}</td>
-                <td>${item.unit_price}</td>
-                <td>${item.quantity}</td>
-                <td class="text-end">$${price.toFixed(2)}</td>
-                <td>${item.remark || ''}</td>
+                <td>${itemName}</td>
+                <td>${unitPriceDisplay}</td>
+                <td>${quantity}</td>
+                <td class="text-end ${priceClass}">${priceDisplay}</td>
+                <td>${remark}</td>
             </tr>`;
     });
+    
+    let subtotalDisplay;
+    let subtotalClass = '';
+    
+    if (subtotal < 0) {
+        subtotalDisplay = `-$${Math.abs(subtotal).toFixed(2)}`;
+        subtotalClass = 'text-danger';
+    } else {
+        subtotalDisplay = `$${subtotal.toFixed(2)}`;
+    }
     
     html += `
             </tbody>
             <tfoot>
                 <tr class="table-info">
                     <td colspan="3" class="text-end"><strong>小計：</strong></td>
-                    <td class="text-end"><strong>$${subtotal.toFixed(2)}</strong></td>
+                    <td class="text-end"><strong class="${subtotalClass}">${subtotalDisplay}</strong></td>
                     <td></td>
                 </tr>
             </tfoot>
@@ -306,116 +854,225 @@ function createTabDetailsHTML(items) {
     return html;
 }
 
-// 分類明細項目的輔助函數
+function createCompanyDetailsHTML(items) {
+    if (!items || !Array.isArray(items) || items.length === 0) {
+        return '<p class="text-muted p-3">此分類無資料</p>';
+    }
+    
+    let html = `
+        <table class="table table-sm table-striped">
+            <thead>
+                <tr>
+                    <th>項目名稱</th>
+                    <th>類型</th>
+                    <th>單價</th>
+                    <th>數量</th>
+                    <th class="text-end">總價</th>
+                </tr>
+            </thead>
+            <tbody>`;
+    
+    let subtotal = 0;
+    
+    items.forEach(item => {
+        if (!item) return;
+        
+        const itemName = item.item_name || '未知項目';
+        const tabSource = item.tab_source || '款項明細';
+        const unitPrice = item.unit_price || '';
+        const quantity = item.quantity || '';
+        let totalPrice = parseFloat(item.total_price) || 0;
+        
+        // 如果是應退款項目，確保為負數
+        if (tabSource === '其他應退款' && totalPrice > 0) {
+            totalPrice = -totalPrice;
+        }
+        
+        subtotal += totalPrice;
+        
+        let priceDisplay;
+        let priceClass = '';
+        
+        if (totalPrice < 0) {
+            priceDisplay = `-$${Math.abs(totalPrice).toFixed(2)}`;
+            priceClass = 'text-danger';
+        } else {
+            priceDisplay = `$${totalPrice.toFixed(2)}`;
+        }
+        
+        let typeLabel = '';
+        let typeClass = '';
+        switch(tabSource) {
+            case '其他應退款':
+                typeLabel = '應退款';
+                typeClass = 'badge bg-warning';
+                break;
+            case '其他應收款':
+                typeLabel = '應收款';
+                typeClass = 'badge bg-success';
+                break;
+            default:
+                typeLabel = '一般款項';
+                typeClass = 'badge bg-primary';
+        }
+        
+        html += `
+            <tr>
+                <td>${itemName}</td>
+                <td><span class="${typeClass}">${typeLabel}</span></td>
+                <td>${unitPrice}</td>
+                <td>${quantity}</td>
+                <td class="text-end ${priceClass}">${priceDisplay}</td>
+            </tr>`;
+    });
+    
+    let subtotalDisplay;
+    let subtotalClass = '';
+    
+    if (subtotal < 0) {
+        subtotalDisplay = `-$${Math.abs(subtotal).toFixed(2)}`;
+        subtotalClass = 'text-danger';
+    } else {
+        subtotalDisplay = `$${subtotal.toFixed(2)}`;
+    }
+    
+    html += `
+            </tbody>
+            <tfoot>
+                <tr class="table-info">
+                    <td colspan="4" class="text-end"><strong>小計：</strong></td>
+                    <td class="text-end"><strong class="${subtotalClass}">${subtotalDisplay}</strong></td>
+                </tr>
+            </tfoot>
+        </table>`;
+    
+    return html;
+}
+
+// 簡化的分類函數 - 只看 tab_source
 function categorizeDetailedItems(items) {
     const categories = {
         '款項明細': [],
-        '其他應退數': [],
-        '其他應收數': []
+        '其他應退款': [],
+        '其他應收款': []
     };
     
-    if (!items) return categories;
+    if (!items || !Array.isArray(items)) {
+        console.log('警告：items 不是有效的數組');
+        return categories;
+    }
     
-    // 調試：輸出所有項目的tab_source
-    console.log('===== 開始分類項目 =====');
+    console.log('===== 開始分類項目（簡化版）=====');
     console.log('總項目數：', items.length);
     
     items.forEach((item, index) => {
-        // 調試輸出每個項目的關鍵信息
-        if (index < 5) { // 只輸出前5個項目作為範例
-            console.log(`項目${index + 1}:`, {
-                name: item.item_name,
-                tab_source: item.tab_source,
-                price: item.total_price
-            });
+        if (!item || typeof item !== 'object') {
+            console.log(`跳過無效項目 ${index}:`, item);
+            return;
         }
         
-        // 根據 tab_source 或 tab_breakdown 分類
-        if (item.tab_source) {
-            const source = item.tab_source.trim();
-            
-            // 完全匹配爬蟲返回的值
-            if (source === '款項明細') {
+        const tabSource = item.tab_source ? item.tab_source.trim() : '';
+        
+        if (index < 5) {
+            console.log(`項目${index + 1}: ${item.item_name} | 來源Tab: ${tabSource}`);
+        }
+        
+        switch(tabSource) {
+            case '款項明細':
                 categories['款項明細'].push(item);
-            } else if (source === '其他應退款' || source === '其他應該款' || source.includes('應退')) {
-                categories['其他應退數'].push(item);
-            } else if (source === '其他應收款' || source === '其他應收數' || source.includes('應收')) {
-                categories['其他應收數'].push(item);
-            } else {
-                // 如果tab_source不匹配，則根據項目名稱判斷
-                const itemName = item.item_name || '';
-                if (itemName.includes('退') || itemName.includes('扣') || itemName.includes('減')) {
-                    categories['其他應退數'].push(item);
-                } else if (itemName.includes('其他費用') || itemName.includes('其他應收') || 
-                          itemName.includes('補') || itemName.includes('加收')) {
-                    categories['其他應收數'].push(item);
-                } else {
-                    categories['款項明細'].push(item);
-                }
-            }
-        } else {
-            // 沒有tab_source，根據項目名稱特徵分類
-            const itemName = item.item_name || '';
-            
-            // 其他應退數
-            if (itemName.includes('退') || itemName.includes('扣') || itemName.includes('減') || 
-                itemName.includes('折讓') || itemName.includes('折扣')) {
-                categories['其他應退數'].push(item);
-            } 
-            // 其他應收數 - 特別注意「其他費用」這類項目
-            else if (itemName.includes('其他費用') || itemName.includes('其他應收') || 
-                     itemName.includes('補') || itemName.includes('加收') || 
-                     itemName.includes('額外') || itemName.includes('附加') ||
-                     itemName.includes('其他專用')) {
-                categories['其他應收數'].push(item);
-            }
-            // 預設為款項明細
-            else {
+                break;
+            case '其他應退款':
+                categories['其他應退款'].push(item);
+                break;
+            case '其他應收款':
+                categories['其他應收款'].push(item);
+                break;
+            default:
+                console.log(`警告：項目 "${item.item_name}" 沒有有效的 tab_source (${tabSource})，放入款項明細`);
                 categories['款項明細'].push(item);
-            }
+                break;
         }
     });
     
-    // 詳細調試輸出
     console.log('===== 分類結果 =====');
     console.log('款項明細：', categories['款項明細'].length, '筆');
-    if (categories['款項明細'].length > 0) {
-        console.log('款項明細範例：', categories['款項明細'].slice(0, 3).map(i => i.item_name));
-    }
-    console.log('其他應退數：', categories['其他應退數'].length, '筆');
-    if (categories['其他應退數'].length > 0) {
-        console.log('其他應退數範例：', categories['其他應退數'].slice(0, 3).map(i => i.item_name));
-    }
-    console.log('其他應收數：', categories['其他應收數'].length, '筆');
-    if (categories['其他應收數'].length > 0) {
-        console.log('其他應收數範例：', categories['其他應收數'].slice(0, 3).map(i => i.item_name));
-    }
+    console.log('其他應退款：', categories['其他應退款'].length, '筆');  
+    console.log('其他應收款：', categories['其他應收款'].length, '筆');
     
     return categories;
 }
 
-// 計算各Tab小計的輔助函數
+// 按公司分類函數
+function categorizeByCompany(items) {
+    const categories = {
+        '總公司': [],
+        '分公司': [],
+        '未分類': []
+    };
+    
+    if (!items || !Array.isArray(items)) {
+        return categories;
+    }
+    
+    items.forEach(item => {
+        const category = item.category || '';
+        
+        switch(category) {
+            case '總公司':
+                categories['總公司'].push(item);
+                break;
+            case '分公司':
+                categories['分公司'].push(item);
+                break;
+            default:
+                categories['未分類'].push(item);
+                break;
+        }
+    });
+    
+    return categories;
+}
+
+// 計算Tab小計
 function calculateTabSubtotals(categorizedItems) {
     const subtotals = {
         '款項明細': { before: 0, after: 0 },
-        '其他應退數': { before: 0, after: 0 },
-        '其他應收數': { before: 0, after: 0 }
+        '其他應退款': { before: 0, after: 0 },
+        '其他應收款': { before: 0, after: 0 }
     };
     
+    if (!categorizedItems) return subtotals;
+    
     Object.keys(categorizedItems).forEach(category => {
+        if (!Array.isArray(categorizedItems[category])) return;
+        
         let beforeTax = 0;
         let afterTax = 0;
         
         categorizedItems[category].forEach(item => {
-            const price = item.total_price || 0;
+            if (!item) return;
+            
+            let price = parseFloat(item.total_price) || 0;
+            
+            // 如果是其他應退款，確保價格為負數
+            if (category === '其他應退款' && price > 0) {
+                price = -price;
+            }
+            
             beforeTax += price;
             
             // 檢查是否為不計稅項目
-            if (item.is_non_taxable || (item.item_name && item.item_name.includes('不計稅'))) {
-                // 不計稅項目，稅後金額等於稅前
+            const isNonTaxable = item.is_non_taxable || 
+                                 (item.item_name && item.item_name.includes('不計稅'));
+            
+            if (isNonTaxable) {
+                // 不計稅項目，稅後等於稅前
                 afterTax += price;
             } else {
-                // 需計稅項目，加5%營業稅
+                // 需計稅項目
+                // 重要：無論正負數，都是乘以1.05
+                // 正數：100 * 1.05 = 105（增加5%稅）
+                // 負數：-100 * 1.05 = -105（退款也要退5%稅）
                 afterTax += price * 1.05;
             }
         });
@@ -424,7 +1081,124 @@ function calculateTabSubtotals(categorizedItems) {
         subtotals[category].after = afterTax;
     });
     
+    console.log('Tab小計計算結果:', subtotals);
     return subtotals;
+}
+
+// 計算公司小計函數
+function calculateCompanySubtotals(categorizedByCompany) {
+    const subtotals = {
+        '總公司': { before: 0, after: 0 },
+        '分公司': { before: 0, after: 0 },
+        '未分類': { before: 0, after: 0 }
+    };
+    
+    if (!categorizedByCompany) return subtotals;
+    
+    Object.keys(categorizedByCompany).forEach(company => {
+        if (!Array.isArray(categorizedByCompany[company])) return;
+        
+        let beforeTax = 0;
+        let afterTax = 0;
+        
+        categorizedByCompany[company].forEach(item => {
+            if (!item) return;
+            
+            let price = parseFloat(item.total_price) || 0;
+            
+            // 如果是應退款項目，確保為負數
+            if (item.tab_source === '其他應退款' && price > 0) {
+                price = -price;
+            }
+            
+            beforeTax += price;
+            
+            // 檢查是否為不計稅項目
+            const isNonTaxable = item.is_non_taxable || 
+                                 (item.item_name && item.item_name.includes('不計稅'));
+            
+            if (isNonTaxable) {
+                // 不計稅項目，稅後等於稅前
+                afterTax += price;
+            } else {
+                // 需計稅項目，直接乘以1.05
+                afterTax += price * 1.05;
+            }
+        });
+        
+        subtotals[company].before = beforeTax;
+        subtotals[company].after = afterTax;
+    });
+    
+    console.log('公司小計計算結果:', subtotals);
+    return subtotals;
+}
+
+// 統計一致性檢查函數
+function verifyTotals(categorizedByTab, categorizedByCompany) {
+    // 計算Tab方式的總和
+    let tabTotal = 0;
+    let tabTotalTaxed = 0;
+    
+    Object.values(categorizedByTab).forEach(items => {
+        items.forEach(item => {
+            let price = parseFloat(item.total_price) || 0;
+            if (item.tab_source === '其他應退款' && price > 0) {
+                price = -price;
+            }
+            tabTotal += price;
+            
+            const isNonTaxable = item.is_non_taxable || 
+                                 (item.item_name && item.item_name.includes('不計稅'));
+            if (isNonTaxable) {
+                tabTotalTaxed += price;
+            } else {
+                tabTotalTaxed += price * 1.05;
+            }
+        });
+    });
+    
+    // 計算公司方式的總和
+    let companyTotal = 0;
+    let companyTotalTaxed = 0;
+    
+    Object.values(categorizedByCompany).forEach(items => {
+        items.forEach(item => {
+            let price = parseFloat(item.total_price) || 0;
+            if (item.tab_source === '其他應退款' && price > 0) {
+                price = -price;
+            }
+            companyTotal += price;
+            
+            const isNonTaxable = item.is_non_taxable || 
+                                 (item.item_name && item.item_name.includes('不計稅'));
+            if (isNonTaxable) {
+                companyTotalTaxed += price;
+            } else {
+                companyTotalTaxed += price * 1.05;
+            }
+        });
+    });
+    
+    console.log('===== 統計一致性檢查 =====');
+    console.log('Tab分類總計：', tabTotal.toFixed(2));
+    console.log('Tab分類稅後：', tabTotalTaxed.toFixed(2));
+    console.log('公司分類總計：', companyTotal.toFixed(2));
+    console.log('公司分類稅後：', companyTotalTaxed.toFixed(2));
+    
+    if (Math.abs(tabTotal - companyTotal) > 0.01) {
+        console.error('警告：Tab分類和公司分類的總計不一致！');
+    }
+    if (Math.abs(tabTotalTaxed - companyTotalTaxed) > 0.01) {
+        console.error('警告：Tab分類和公司分類的稅後總計不一致！');
+    }
+    
+    return {
+        tabTotal,
+        tabTotalTaxed,
+        companyTotal,
+        companyTotalTaxed
+    };
 }
 
 async function processReport() {
@@ -452,8 +1226,8 @@ async function processReport() {
 --------------------------------
 總營收：${result.total_revenue.toFixed(2)} （稅後：${totalRevenueTaxed.toFixed(2)}）
 
-歸屬【總公司】：${result.head_office_revenue.toFixed(2)} （稅後：${headOfficeRevenueTaxed.toFixed(2)}）
-歸屬【分公司】：${result.branch_office_revenue.toFixed(2)} （稅後：${branchOfficeRevenueTaxed.toFixed(2)}）`;
+歸屬「總公司」：${result.head_office_revenue.toFixed(2)} （稅後：${headOfficeRevenueTaxed.toFixed(2)}）
+歸屬「分公司」：${result.branch_office_revenue.toFixed(2)} （稅後：${branchOfficeRevenueTaxed.toFixed(2)}）`;
     
     // 分類項目
     const categorizedItems = categorizeDetailedItems(result.detailed_items);
@@ -470,19 +1244,22 @@ async function processReport() {
                     <div class="col-md-4">
                         <div class="text-primary">
                             <strong>款項明細：</strong><br>
-                            ${tabSubtotals['款項明細'].before.toFixed(2)} （稅後：${tabSubtotals['款項明細'].after.toFixed(2)}）
+                            ${tabSubtotals['款項明細'].before.toFixed(2)} 
+                            <small class="text-muted">（稅後：${tabSubtotals['款項明細'].after.toFixed(2)}）</small>
                         </div>
                     </div>
                     <div class="col-md-4">
                         <div class="text-warning">
-                            <strong>其他應退數：</strong><br>
-                            ${tabSubtotals['其他應退數'].before.toFixed(2)} （稅後：${tabSubtotals['其他應退數'].after.toFixed(2)}）
+                            <strong>其他應退款：</strong><br>
+                            <span class="text-danger">${tabSubtotals['其他應退款'].before.toFixed(2)}</span>
+                            <small class="text-muted">（稅後：${tabSubtotals['其他應退款'].after.toFixed(2)}）</small>
                         </div>
                     </div>
                     <div class="col-md-4">
                         <div class="text-success">
-                            <strong>其他應收數：</strong><br>
-                            ${tabSubtotals['其他應收數'].before.toFixed(2)} （稅後：${tabSubtotals['其他應收數'].after.toFixed(2)}）
+                            <strong>其他應收款：</strong><br>
+                            ${tabSubtotals['其他應收款'].before.toFixed(2)} 
+                            <small class="text-muted">（稅後：${tabSubtotals['其他應收款'].after.toFixed(2)}）</small>
                         </div>
                     </div>
                 </div>
@@ -503,14 +1280,14 @@ async function processReport() {
                     </li>
                     <li class="nav-item">
                         <button class="nav-link" onclick="switchTab(event, 'deduction-${uniqueId}')" type="button">
-                            其他應退數 
-                            <span class="badge bg-warning">${categorizedItems['其他應退數'].length}</span>
+                            其他應退款 
+                            <span class="badge bg-warning">${categorizedItems['其他應退款'].length}</span>
                         </button>
                     </li>
                     <li class="nav-item">
                         <button class="nav-link" onclick="switchTab(event, 'addition-${uniqueId}')" type="button">
-                            其他應收數 
-                            <span class="badge bg-success">${categorizedItems['其他應收數'].length}</span>
+                            其他應收款 
+                            <span class="badge bg-success">${categorizedItems['其他應收款'].length}</span>
                         </button>
                     </li>
                 </ul>
@@ -518,13 +1295,13 @@ async function processReport() {
             <div class="card-body">
                 <div class="tab-content">
                     <div class="tab-pane show active" id="detail-${uniqueId}">
-                        ${createTabDetailsHTML(categorizedItems['款項明細'])}
+                        ${createTabDetailsHTML(categorizedItems['款項明細'], false)}
                     </div>
                     <div class="tab-pane" id="deduction-${uniqueId}" style="display:none;">
-                        ${createTabDetailsHTML(categorizedItems['其他應退數'])}
+                        ${createTabDetailsHTML(categorizedItems['其他應退款'], true)}
                     </div>
                     <div class="tab-pane" id="addition-${uniqueId}" style="display:none;">
-                        ${createTabDetailsHTML(categorizedItems['其他應收數'])}
+                        ${createTabDetailsHTML(categorizedItems['其他應收款'], false)}
                     </div>
                 </div>
             </div>
@@ -562,10 +1339,10 @@ async function processReport() {
 
 async function saveReport() {
     if (!currentReportData) { alert('沒有可儲存的資料！'); return; }
-    if (confirm(`確定入帳【${currentReportData.customer_name} - ${currentReportData.year}年${currentReportData.month}月】嗎？`)) {
+    if (confirm(`確定入帳「${currentReportData.customer_name} - ${currentReportData.year}年${currentReportData.month}月」嗎？`)) {
         const response = await fetch(`${API_URL}/save_report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(currentReportData) });
         if (response.ok) {
-            alert(`【${currentReportData.customer_name}】的帳單已成功入帳！`);
+            alert(`「${currentReportData.customer_name}」的帳單已成功入帳！`);
             document.getElementById('saveReportBtn').style.display = 'none';
             document.getElementById('resultOutput').innerHTML = '';
             document.getElementById('reportInput').value = '';
@@ -667,7 +1444,7 @@ async function updateReconciliationStatus() {
 
 function selectCustomerForReconciliation(customerId, customerName, status) {
     if (status === 'reconciled') {
-        if (!confirm(`【${customerName}】在該月份已有對帳紀錄。\n\n您確定要重新生成帳單嗎？ (舊紀錄將會被覆蓋)`)) {
+        if (!confirm(`「${customerName}」在該月份已有對帳紀錄。\n\n您確定要重新生成帳單嗎？ (舊紀錄將會被覆蓋)`)) {
             return; 
         }
     }
@@ -680,7 +1457,7 @@ function selectCustomerForReconciliation(customerId, customerName, status) {
     document.getElementById('resultOutput').innerHTML = '';
     document.getElementById('saveReportBtn').style.display = 'none';
     
-    document.getElementById('action-area-title').innerHTML = `▼ 正在為 <strong>【${customerName}】</strong> 對帳...`;
+    document.getElementById('action-area-title').innerHTML = `▼ 正在為 <strong>「${customerName}」</strong> 對帳...`;
     const actionContent = document.getElementById('action-area-content');
     actionContent.style.display = 'block';
 
@@ -817,64 +1594,104 @@ async function deleteMonthlySummary(year, month) {
     }
 }
 
+// 修正 fetchAllBills 函數 - 確保onclick正確傳遞參數
 async function fetchAllBills() {
+    console.log('開始載入所有帳單...');
     const container = document.getElementById('all-bills-table-container');
     container.innerHTML = '<p>正在載入所有帳單...</p>';
+    
     const year = document.getElementById('billYearFilter').value;
     const month = document.getElementById('billMonthFilter').value;
     const searchTerm = document.getElementById('billSearchInput').value;
     const query = new URLSearchParams({ year, month, search: searchTerm }).toString();
-    const response = await fetch(`${API_URL}/all_reports?${query}`);
-    const bills = await response.json();
-    if (!bills || bills.length === 0) { container.innerHTML = '<p>找不到符合條件的帳單紀錄。</p>'; return; }
     
-    let tableHTML = `<table class="table table-hover">
-        <thead>
-            <tr>
-                <th>客戶名稱</th>
-                <th>年份</th>
-                <th>月份</th>
-                <th>稅後總營收</th>
-                <th>稅後總公司</th>
-                <th>稅後分公司</th>
-                <th>操作</th>
-            </tr>
-        </thead>
-        <tbody>`;
-    
-    bills.forEach(bill => {
-        const customerName = bill.customers ? bill.customers.name : '未知客戶';
-        const totalRevenue = (bill.total_revenue_taxed || 0).toFixed(2);
-        const headOfficeRevenue = (bill.head_office_revenue_taxed || 0).toFixed(2);
-        const branchOfficeRevenue = (bill.branch_office_revenue_taxed || 0).toFixed(2);
+    try {
+        const response = await fetch(`${API_URL}/all_reports?${query}`);
+        const bills = await response.json();
+        console.log('載入帳單數量:', bills ? bills.length : 0);
         
-        tableHTML += `
-            <tr id="bill-row-${bill.id}" class="bill-row" onclick="toggleBillLineItems(${bill.id}, this)">
-                <td>${customerName}</td>
-                <td>${bill.year}</td>
-                <td>${bill.month}</td>
-                <td>${totalRevenue}</td>
-                <td class="text-primary">${headOfficeRevenue}</td>
-                <td class="text-info">${branchOfficeRevenue}</td>
-                <td class="actions">
-                    <button class="btn btn-sm btn-danger" onclick="deleteBill(${bill.id}, event)">刪除</button>
-                </td>
-            </tr>
-            <tr id="details-row-${bill.id}" class="line-item-details-row">
-                <td colspan="7" class="line-item-details-cell"></td>
-            </tr>`;
-    });
-    
-    tableHTML += `</tbody></table>`;
-    container.innerHTML = tableHTML;
+        if (!bills || bills.length === 0) { 
+            container.innerHTML = '<p>找不到符合條件的帳單紀錄。</p>'; 
+            return; 
+        }
+        
+        let tableHTML = `<table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>客戶名稱</th>
+                    <th>年份</th>
+                    <th>月份</th>
+                    <th>稅後總營收</th>
+                    <th>稅後總公司</th>
+                    <th>稅後分公司</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>`;
+        
+        bills.forEach(bill => {
+            const customerName = bill.customers ? bill.customers.name : '未知客戶';
+            const totalRevenue = (bill.total_revenue_taxed || 0).toFixed(2);
+            const headOfficeRevenue = (bill.head_office_revenue_taxed || 0).toFixed(2);
+            const branchOfficeRevenue = (bill.branch_office_revenue_taxed || 0).toFixed(2);
+            
+            tableHTML += `
+                <tr id="bill-row-${bill.id}" class="bill-row" style="cursor: pointer;">
+                    <td onclick="toggleBillLineItems(${bill.id})">${customerName}</td>
+                    <td onclick="toggleBillLineItems(${bill.id})">${bill.year}</td>
+                    <td onclick="toggleBillLineItems(${bill.id})">${bill.month}</td>
+                    <td onclick="toggleBillLineItems(${bill.id})">${totalRevenue}</td>
+                    <td onclick="toggleBillLineItems(${bill.id})" class="text-primary">${headOfficeRevenue}</td>
+                    <td onclick="toggleBillLineItems(${bill.id})" class="text-info">${branchOfficeRevenue}</td>
+                    <td class="actions">
+                        <button class="btn btn-sm btn-danger" onclick="deleteBill(${bill.id}, event)">刪除</button>
+                    </td>
+                </tr>
+                <tr id="details-row-${bill.id}" class="line-item-details-row" style="display: none;">
+                    <td colspan="7" class="line-item-details-cell"></td>
+                </tr>`;
+        });
+        
+        tableHTML += `</tbody></table>`;
+        container.innerHTML = tableHTML;
+        console.log('帳單表格已渲染完成');
+    } catch (error) {
+        console.error('載入帳單時發生錯誤:', error);
+        container.innerHTML = '<p class="error">載入帳單失敗，請檢查控制台錯誤訊息。</p>';
+    }
 }
 
+// 主要的展開函數 - 雙層Tab設計
 async function toggleBillLineItems(billId, rowElement) {
+    console.log('開始展開帳單明細，billId:', billId);
+    
+    if (window.event && window.event.target && window.event.target.tagName === 'BUTTON') {
+        return;
+    }
+    
+    if (!rowElement) {
+        rowElement = document.getElementById(`bill-row-${billId}`);
+    }
+    
     const detailsRow = document.getElementById(`details-row-${billId}`);
+    
+    if (!detailsRow || !rowElement) {
+        console.error('找不到必要的元素');
+        return;
+    }
+    
     const isVisible = detailsRow.style.display === 'table-row';
 
-    document.querySelectorAll('.line-item-details-row').forEach(row => row.style.display = 'none');
-    document.querySelectorAll('.bill-row').forEach(row => row.classList.remove('active'));
+    document.querySelectorAll('.line-item-details-row').forEach(row => {
+        if (row.id !== `details-row-${billId}`) {
+            row.style.display = 'none';
+        }
+    });
+    document.querySelectorAll('.bill-row').forEach(row => {
+        if (row.id !== `bill-row-${billId}`) {
+            row.classList.remove('active');
+        }
+    });
 
     if (isVisible) {
         detailsRow.style.display = 'none';
@@ -887,22 +1704,161 @@ async function toggleBillLineItems(billId, rowElement) {
 
         try {
             const response = await fetch(`${API_URL}/reports/${billId}/details`);
-            if (!response.ok) throw new Error('Network response was not ok');
+            console.log('API響應狀態:', response.status);
+            
+            if (!response.ok) {
+                throw new Error(`API回傳錯誤: ${response.status}`);
+            }
+            
             const items = await response.json();
+            console.log('獲取到的明細項目數:', items ? items.length : 0);
+            
             if (items && items.length > 0) {
-                let tableHTML = '<table class="table table-bordered inner-table"><thead><tr><th>項目</th><th>歸屬</th><th>單價</th><th>數量</th><th>總價</th></tr></thead><tbody>';
-                items.forEach(item => {
-                    const price = parseFloat(item.total_price) || 0;
-                    tableHTML += `<tr><td>${item.item_name}</td><td>${item.category}</td><td>${item.unit_price}</td><td>${item.quantity}</td><td>$${price.toFixed(2)}</td></tr>`;
-                });
-                tableHTML += '</tbody></table>';
-                cell.innerHTML = tableHTML;
+                // 分類數據
+                const categorizedByTab = categorizeDetailedItems(items);
+                const categorizedByCompany = categorizeByCompany(items);
+                
+                // 計算小計
+                const tabSubtotals = calculateTabSubtotals(categorizedByTab);
+                const companySubtotals = calculateCompanySubtotals(categorizedByCompany);
+                // 在計算小計後加入
+                const validation = verifyTotals(categorizedByTab, categorizedByCompany);
+                const uniqueId = Date.now();
+                
+                let tabsHTML = `
+                    <!-- 第一層：按款項類型分類 -->
+                    <div class="card border-0 mb-4">
+                        <div class="card-header bg-light">
+                            <h6 class="mb-0 text-muted">按款項類型分類</h6>
+                        </div>
+                        <div class="card-header bg-transparent">
+                            <ul class="nav nav-tabs card-header-tabs" role="tablist">
+                                <li class="nav-item">
+                                    <button class="nav-link active" onclick="switchTab(event, 'bill-detail-${uniqueId}')" type="button">
+                                        款項明細 
+                                        <span class="badge bg-primary">${categorizedByTab['款項明細'].length}</span>
+                                    </button>
+                                </li>
+                                <li class="nav-item">
+                                    <button class="nav-link" onclick="switchTab(event, 'bill-deduction-${uniqueId}')" type="button">
+                                        其他應退款 
+                                        <span class="badge bg-warning">${categorizedByTab['其他應退款'].length}</span>
+                                    </button>
+                                </li>
+                                <li class="nav-item">
+                                    <button class="nav-link" onclick="switchTab(event, 'bill-addition-${uniqueId}')" type="button">
+                                        其他應收款 
+                                        <span class="badge bg-success">${categorizedByTab['其他應收款'].length}</span>
+                                    </button>
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="card-body">
+                            <div class="tab-content">
+                                <div class="tab-pane show active" id="bill-detail-${uniqueId}">
+                                    ${createTabDetailsHTML(categorizedByTab['款項明細'], false)}
+                                </div>
+                                <div class="tab-pane" id="bill-deduction-${uniqueId}" style="display:none;">
+                                    ${createTabDetailsHTML(categorizedByTab['其他應退款'], true)}
+                                </div>
+                                <div class="tab-pane" id="bill-addition-${uniqueId}" style="display:none;">
+                                    ${createTabDetailsHTML(categorizedByTab['其他應收款'], false)}
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="card-footer bg-light">
+                            <div class="row text-center">
+                                <div class="col-md-4">
+                                    <small class="text-muted">款項明細小計</small><br>
+                                    <strong>${tabSubtotals['款項明細'].before.toFixed(2)}</strong>
+                                    <small class="text-muted">（稅後：${tabSubtotals['款項明細'].after.toFixed(2)}）</small>
+                                </div>
+                                <div class="col-md-4">
+                                    <small class="text-muted">其他應退款小計</small><br>
+                                    <strong class="text-danger">${tabSubtotals['其他應退款'].before.toFixed(2)}</strong>
+                                    <small class="text-muted">（稅後：${tabSubtotals['其他應退款'].after.toFixed(2)}）</small>
+                                </div>
+                                <div class="col-md-4">
+                                    <small class="text-muted">其他應收款小計</small><br>
+                                    <strong>${tabSubtotals['其他應收款'].before.toFixed(2)}</strong>
+                                    <small class="text-muted">（稅後：${tabSubtotals['其他應收款'].after.toFixed(2)}）</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 第二層：按公司歸屬分類 -->
+                    <div class="card border-0">
+                        <div class="card-header bg-light">
+                            <h6 class="mb-0 text-muted">按公司歸屬分類</h6>
+                        </div>
+                        <div class="card-header bg-transparent">
+                            <ul class="nav nav-tabs card-header-tabs" role="tablist">
+                                <li class="nav-item">
+                                    <button class="nav-link active" onclick="switchTab(event, 'company-head-${uniqueId}')" type="button">
+                                        總公司 
+                                        <span class="badge bg-info">${categorizedByCompany['總公司'].length}</span>
+                                    </button>
+                                </li>
+                                <li class="nav-item">
+                                    <button class="nav-link" onclick="switchTab(event, 'company-branch-${uniqueId}')" type="button">
+                                        分公司 
+                                        <span class="badge bg-secondary">${categorizedByCompany['分公司'].length}</span>
+                                    </button>
+                                </li>
+                                <li class="nav-item">
+                                    <button class="nav-link" onclick="switchTab(event, 'company-unclassified-${uniqueId}')" type="button">
+                                        未分類 
+                                        <span class="badge bg-danger">${categorizedByCompany['未分類'].length}</span>
+                                    </button>
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="card-body">
+                            <div class="tab-content">
+                                <div class="tab-pane show active" id="company-head-${uniqueId}">
+                                    ${createCompanyDetailsHTML(categorizedByCompany['總公司'])}
+                                </div>
+                                <div class="tab-pane" id="company-branch-${uniqueId}" style="display:none;">
+                                    ${createCompanyDetailsHTML(categorizedByCompany['分公司'])}
+                                </div>
+                                <div class="tab-pane" id="company-unclassified-${uniqueId}" style="display:none;">
+                                    ${createCompanyDetailsHTML(categorizedByCompany['未分類'])}
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="card-footer bg-light">
+                            <div class="row text-center">
+                                <div class="col-md-4">
+                                    <small class="text-muted">總公司小計</small><br>
+                                    <strong>${companySubtotals['總公司'].before.toFixed(2)}</strong>
+                                    <small class="text-muted">（稅後：${companySubtotals['總公司'].after.toFixed(2)}）</small>
+                                </div>
+                                <div class="col-md-4">
+                                    <small class="text-muted">分公司小計</small><br>
+                                    <strong>${companySubtotals['分公司'].before.toFixed(2)}</strong>
+                                    <small class="text-muted">（稅後：${companySubtotals['分公司'].after.toFixed(2)}）</small>
+                                </div>
+                                <div class="col-md-4">
+                                    <small class="text-muted">總計</small><br>
+                                    <strong>${(companySubtotals['總公司'].before + companySubtotals['分公司'].before).toFixed(2)}</strong>
+                                    <small class="text-muted">（稅後：${(companySubtotals['總公司'].after + companySubtotals['分公司'].after).toFixed(2)}）</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>`;
+                
+                cell.innerHTML = tabsHTML;
+                console.log('雙層Tab介面已成功插入');
             } else {
                 cell.innerHTML = '<p>查無此帳單的消費明細。</p>';
             }
         } catch (error) {
             console.error("載入或渲染帳單明細時發生錯誤:", error);
-            cell.innerHTML = '<p class="error">載入明細失敗，請檢查主控台 (Console) 錯誤訊息。</p>';
+            const cell = detailsRow.querySelector('td');
+            cell.innerHTML = `<p class="error">載入明細失敗：${error.message}</p>`;
         }
     }
 }
@@ -916,6 +1872,7 @@ async function deleteBill(billId, event) {
     }
 }
 
+// 簡化版的 scrapeAndProcessReport 函數
 async function scrapeAndProcessReport() {
     const customerId = document.getElementById('reconCustomerSelect').value;
     if (!customerId) {
@@ -983,8 +1940,8 @@ async function scrapeAndProcessReport() {
 --------------------------------
 總營收：${result.total_revenue.toFixed(2)} （稅後：${totalRevenueTaxed.toFixed(2)}）
 
-歸屬【總公司】：${result.head_office_revenue.toFixed(2)} （稅後：${headOfficeRevenueTaxed.toFixed(2)}）
-歸屬【分公司】：${result.branch_office_revenue.toFixed(2)} （稅後：${branchOfficeRevenueTaxed.toFixed(2)}）`;
+歸屬「總公司」：${result.head_office_revenue.toFixed(2)} （稅後：${headOfficeRevenueTaxed.toFixed(2)}）
+歸屬「分公司」：${result.branch_office_revenue.toFixed(2)} （稅後：${branchOfficeRevenueTaxed.toFixed(2)}）`;
         
         // 分類項目
         const categorizedItems = categorizeDetailedItems(result.detailed_items);
@@ -1001,19 +1958,22 @@ async function scrapeAndProcessReport() {
                         <div class="col-md-4">
                             <div class="text-primary">
                                 <strong>款項明細：</strong><br>
-                                ${tabSubtotals['款項明細'].before.toFixed(2)} （稅後：${tabSubtotals['款項明細'].after.toFixed(2)}）
+                                ${tabSubtotals['款項明細'].before.toFixed(2)} 
+                                <small class="text-muted">（稅後：${tabSubtotals['款項明細'].after.toFixed(2)}）</small>
                             </div>
                         </div>
                         <div class="col-md-4">
                             <div class="text-warning">
-                                <strong>其他應退數：</strong><br>
-                                ${tabSubtotals['其他應退數'].before.toFixed(2)} （稅後：${tabSubtotals['其他應退數'].after.toFixed(2)}）
+                                <strong>其他應退款：</strong><br>
+                                <span class="text-danger">${tabSubtotals['其他應退款'].before.toFixed(2)}</span>
+                                <small class="text-muted">（稅後：${tabSubtotals['其他應退款'].after.toFixed(2)}）</small>
                             </div>
                         </div>
                         <div class="col-md-4">
                             <div class="text-success">
-                                <strong>其他應收數：</strong><br>
-                                ${tabSubtotals['其他應收數'].before.toFixed(2)} （稅後：${tabSubtotals['其他應收數'].after.toFixed(2)}）
+                                <strong>其他應收款：</strong><br>
+                                ${tabSubtotals['其他應收款'].before.toFixed(2)} 
+                                <small class="text-muted">（稅後：${tabSubtotals['其他應收款'].after.toFixed(2)}）</small>
                             </div>
                         </div>
                     </div>
@@ -1034,14 +1994,14 @@ async function scrapeAndProcessReport() {
                         </li>
                         <li class="nav-item">
                             <button class="nav-link" onclick="switchTab(event, 'deduction-${uniqueId}')" type="button">
-                                其他應退數 
-                                <span class="badge bg-warning">${categorizedItems['其他應退數'].length}</span>
+                                其他應退款 
+                                <span class="badge bg-warning">${categorizedItems['其他應退款'].length}</span>
                             </button>
                         </li>
                         <li class="nav-item">
                             <button class="nav-link" onclick="switchTab(event, 'addition-${uniqueId}')" type="button">
-                                其他應收數 
-                                <span class="badge bg-success">${categorizedItems['其他應收數'].length}</span>
+                                其他應收款 
+                                <span class="badge bg-success">${categorizedItems['其他應收款'].length}</span>
                             </button>
                         </li>
                     </ul>
@@ -1049,13 +2009,13 @@ async function scrapeAndProcessReport() {
                 <div class="card-body">
                     <div class="tab-content">
                         <div class="tab-pane show active" id="detail-${uniqueId}">
-                            ${createTabDetailsHTML(categorizedItems['款項明細'])}
+                            ${createTabDetailsHTML(categorizedItems['款項明細'], false)}
                         </div>
                         <div class="tab-pane" id="deduction-${uniqueId}" style="display:none;">
-                            ${createTabDetailsHTML(categorizedItems['其他應退數'])}
+                            ${createTabDetailsHTML(categorizedItems['其他應退款'], true)}
                         </div>
                         <div class="tab-pane" id="addition-${uniqueId}" style="display:none;">
-                            ${createTabDetailsHTML(categorizedItems['其他應收數'])}
+                            ${createTabDetailsHTML(categorizedItems['其他應收款'], false)}
                         </div>
                     </div>
                 </div>
@@ -1084,104 +2044,56 @@ async function scrapeAndProcessReport() {
             }
         }
         
-        let completionInfo = '<div class="mt-3">';
+        let completionInfo = '';
         
-        if (result.failed_tabs && result.failed_tabs.length > 0) {
-            completionInfo += `
-                <div class="alert alert-danger">
-                    <h5>❌ Tab爬取失敗警告</h5>
-                    <p>以下Tab爬取失敗：<strong>${result.failed_tabs.join(', ')}</strong></p>
-                    <p>請手動檢查這些Tab是否有資料，或重新執行爬取。</p>
-                </div>`;
-        }
-        
-        if (result.tab_breakdown) {
-            completionInfo += `
-                <div class="alert alert-info">
-                    <h5>📊 各Tab資料統計</h5>
-                    <table class="table table-sm mb-0">
-                        <tr><td>款項明細：</td><td><strong>${result.tab_breakdown['款項明細'] || 0}</strong> 筆</td></tr>
-                        <tr><td>其他應退款：</td><td><strong>${result.tab_breakdown['其他應退款'] || 0}</strong> 筆</td></tr>
-                        <tr><td>其他應收款：</td><td><strong>${result.tab_breakdown['其他應收款'] || 0}</strong> 筆</td></tr>
-                    </table>
-                </div>`;
-        }
-        
-        if (result.expected_count !== null && result.expected_count !== undefined && result.expected_count > 0) {
-            const isComplete = result.actual_count === result.expected_count;
-            const completionClass = isComplete ? 'success' : 'warning';
-            const completionIcon = isComplete ? '✅' : '⚠️';
-            
-            completionInfo += `
-                <div class="alert alert-${completionClass}">
-                    <h5>${completionIcon} 資料抓取統計</h5>
-                    <table class="table table-sm mb-2">
-                        <tr>
-                            <td>預期資料筆數：</td>
-                            <td><strong>${result.expected_count}</strong> 筆</td>
-                        </tr>
-                        <tr>
-                            <td>實際抓取筆數：</td>
-                            <td><strong>${result.actual_count}</strong> 筆</td>
-                        </tr>
-                        <tr>
-                            <td>完成率：</td>
-                            <td><strong>${result.completion_rate ? result.completion_rate.toFixed(1) : '0'}%</strong></td>
-                        </tr>
-                    </table>`;
-            
-            if (isComplete) {
-                completionInfo += `<div class="text-success"><strong>✅ 資料完整：筆數完全相符！</strong></div>`;
-                allowSave = true;
-            } else if (result.actual_count > result.expected_count) {
-                const excess = result.actual_count - result.expected_count;
-                completionInfo += `
-                    <div class="text-warning">
-                        <strong>⚠️ 注意：</strong>抓取筆數超過預期 <strong>${excess}</strong> 筆
-                        <br>可能有重複資料，請檢查明細後再決定是否入帳。
-                    </div>`;
-                allowSave = true;
-            } else {
-                const missing = result.expected_count - result.actual_count;
-                completionInfo += `
-                    <div class="text-warning">
-                        <strong>⚠️ 注意：</strong>缺少 <strong>${missing}</strong> 筆資料
-                        <br>可能有遺漏，請確認資料完整性後再決定是否入帳。
-                    </div>`;
-                allowSave = true;
-            }
-            
-            completionInfo += `</div>`;
-            
-        } else if (result.actual_count > 0) {
-            completionInfo += `
-                <div class="alert alert-info">
-                    <h5>ℹ️ 資料抓取統計</h5>
-                    <table class="table table-sm mb-2">
-                        <tr>
-                            <td>預期資料筆數：</td>
-                            <td><strong>無法取得</strong></td>
-                        </tr>
-                        <tr>
-                            <td>實際抓取筆數：</td>
-                            <td><strong>${result.actual_count}</strong> 筆</td>
-                        </tr>
-                    </table>
-                    <div class="text-info">
-                        <strong>提醒：</strong>系統無法取得預期筆數，請手動確認資料是否完整。
-                    </div>
-                </div>`;
-            allowSave = true;
-        } else {
-            completionInfo += `
-                <div class="alert alert-danger">
+        // 只在資料有問題時顯示警告
+        if (result.actual_count === 0) {
+            // 完全沒抓到資料
+            completionInfo = `
+                <div class="alert alert-danger mt-3">
                     <h5>❌ 未抓取到任何資料</h5>
                     <p>請確認該月份是否有帳單資料。</p>
                 </div>`;
+        } else if (result.expected_count !== null && result.expected_count !== undefined && result.expected_count > 0) {
+            // 有預期筆數且不一致時才顯示
+            if (result.actual_count !== result.expected_count) {
+                const isOver = result.actual_count > result.expected_count;
+                const diff = Math.abs(result.actual_count - result.expected_count);
+                const completionClass = isOver ? 'warning' : 'warning';
+                const completionIcon = '⚠️';
+                
+                completionInfo = `
+                    <div class="alert alert-${completionClass} mt-3">
+                        <h5>${completionIcon} 資料筆數不一致</h5>
+                        <table class="table table-sm mb-2">
+                            <tr>
+                                <td>預期資料筆數：</td>
+                                <td><strong>${result.expected_count}</strong> 筆</td>
+                            </tr>
+                            <tr>
+                                <td>實際抓取筆數：</td>
+                                <td><strong>${result.actual_count}</strong> 筆</td>
+                            </tr>
+                            <tr>
+                                <td>差異：</td>
+                                <td><strong>${isOver ? '+' : '-'}${diff}</strong> 筆</td>
+                            </tr>
+                        </table>
+                        <div class="text-warning">
+                            ${isOver ? 
+                                `<strong>注意：</strong>抓取筆數超過預期，可能有重複資料，請檢查明細後再決定是否入帳。` :
+                                `<strong>注意：</strong>缺少 ${diff} 筆資料，可能有遺漏，請確認資料完整性後再決定是否入帳。`
+                            }
+                        </div>
+                    </div>`;
+            }
+            allowSave = true;
+        } else {
+            // 沒有預期筆數但有抓到資料，不顯示警告，直接允許存檔
+            allowSave = true;
         }
         
-        completionInfo += '</div>';
-        
+        // 未分類項目警告（這個保留）
         if (result.unclassified_items && result.unclassified_items.length > 0) {
             const listItems = result.unclassified_items.map(item => `<li>${item}</li>`).join('');
             unclassifiedHtml = `
@@ -1216,7 +2128,6 @@ async function scrapeAndProcessReport() {
             <pre>${mainResultText}</pre>
             ${tabsHTML}
             ${completionInfo}
-            ${statusHtml}
             ${unclassifiedHtml}
         `;
 
@@ -1244,3 +2155,35 @@ function populateBillFilters() {
     for (let i = currentYear + 5; i >= currentYear - 5; i--) { yearFilter.innerHTML += `<option value="${i}">${i} 年</option>`; }
     for (let i = 1; i <= 12; i++) { monthFilter.innerHTML += `<option value="${i}">${i} 月</option>`; }
 }
+
+// 點擊其他地方取消編輯
+document.addEventListener('click', function(e) {
+    // 如果點擊的不是正在編輯的元素或其子元素，取消編輯
+    if (currentEditingElement && 
+        !currentEditingElement.contains(e.target) && 
+        !e.target.closest('select') && 
+        !e.target.closest('.form-control')) {
+        cancelCategoryEdit();
+    }
+});
+
+// 事件監聽器（模態框版本）
+document.addEventListener('DOMContentLoaded', function() {
+    // 編輯表單實時驗證
+    const editItemName = document.getElementById('editItemName');
+    const editItemCategory = document.getElementById('editItemCategory');
+    
+    if (editItemName) {
+        editItemName.addEventListener('input', validateEditItemForm);
+    }
+    
+    if (editItemCategory) {
+        editItemCategory.addEventListener('change', validateEditItemForm);
+    }
+    
+    // 保存按鈕事件
+    const saveBtn = document.getElementById('saveEditItem');
+    if (saveBtn) {
+        saveBtn.addEventListener('click', saveEditItem);
+    }
+});

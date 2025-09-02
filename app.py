@@ -247,6 +247,8 @@ def _calculate_report_from_text(report_text: str):
         'detailed_items': detailed_items
     }
 
+ # === 修改 app.py 中的計算函數 ===
+
 def _calculate_report_from_scraped_data(scraped_details: list):
     """(供自動抓取使用) 直接處理爬蟲回傳的結構化資料"""
     item_categories = _get_item_categories()
@@ -263,6 +265,13 @@ def _calculate_report_from_scraped_data(scraped_details: list):
         price = item.get("total_price", 0.0)
         category = item_categories.get(item_name, "未分類")
         item["category"] = category
+        
+        # 重要：根據 tab_source 處理價格
+        tab_source = item.get("tab_source", "")
+        if tab_source == "其他應退款":
+            # 應退款項目，確保價格為負數
+            price = -abs(price)
+            item["total_price"] = price  # 更新項目的價格為負數
         
         # 檢查是否為不計稅項目
         is_non_taxable = "不計稅" in item_name
@@ -305,6 +314,83 @@ def _calculate_report_from_scraped_data(scraped_details: list):
         'unclassified_items': list(unclassified_items),
         'detailed_items': scraped_details
     }
+
+def _calculate_report_from_text(report_text: str):
+    """(供手動貼上使用) 接收報表文字，回傳計算結果字典"""
+    item_categories = _get_item_categories()
+    
+    # 分開記錄需要計稅和不計稅的營收
+    total_revenue_taxable, total_revenue_non_taxable = 0, 0
+    head_office_revenue_taxable, head_office_revenue_non_taxable = 0, 0
+    branch_office_revenue_taxable, branch_office_revenue_non_taxable = 0, 0
+    
+    unclassified_items = set()
+    detailed_items = []
+    
+    lines = [line.strip() for line in report_text.strip().split('\n') if line.strip()]
+    
+    for i in range(0, len(lines), 5):
+        record = lines[i:i+5]
+        if len(record) == 5:
+            item_name = record[0].strip()
+            unit_price_str = record[1].strip()
+            quantity_str = record[2].strip()
+            price_line = record[3].strip()
+            
+            price = _clean_price_for_manual_text(price_line)
+            category = item_categories.get(item_name, "未分類")
+            
+            # 檢查是否為不計稅項目
+            is_non_taxable = "不計稅" in item_name
+            
+            detailed_items.append({
+                "item_name": item_name, 
+                "category": category, 
+                "unit_price": unit_price_str, 
+                "quantity": quantity_str, 
+                "total_price": price,
+                "is_non_taxable": is_non_taxable,
+                "tab_source": "款項明細"  # 手動貼上默認為款項明細
+            })
+            
+            if category != "未分類":
+                # 根據是否計稅分別累加
+                if is_non_taxable:
+                    total_revenue_non_taxable += price
+                    if category == "總公司":
+                        head_office_revenue_non_taxable += price
+                    else:
+                        branch_office_revenue_non_taxable += price
+                else:
+                    total_revenue_taxable += price
+                    if category == "總公司":
+                        head_office_revenue_taxable += price
+                    else:
+                        branch_office_revenue_taxable += price
+            else:
+                unclassified_items.add(item_name)
+    
+    # 計算總營收（稅前）
+    total_revenue = total_revenue_taxable + total_revenue_non_taxable
+    head_office_revenue = head_office_revenue_taxable + head_office_revenue_non_taxable
+    branch_office_revenue = branch_office_revenue_taxable + branch_office_revenue_non_taxable
+    
+    # 計算稅後營收（需計稅的乘以1.05，不計稅的保持原值）
+    total_revenue_taxed = (total_revenue_taxable * 1.05) + total_revenue_non_taxable
+    head_office_revenue_taxed = (head_office_revenue_taxable * 1.05) + head_office_revenue_non_taxable
+    branch_office_revenue_taxed = (branch_office_revenue_taxable * 1.05) + branch_office_revenue_non_taxable
+    
+    return {
+        'total_revenue': total_revenue,
+        'head_office_revenue': head_office_revenue,
+        'branch_office_revenue': branch_office_revenue,
+        'total_revenue_taxed': total_revenue_taxed,
+        'head_office_revenue_taxed': head_office_revenue_taxed,
+        'branch_office_revenue_taxed': branch_office_revenue_taxed,
+        'unclassified_items': list(unclassified_items),
+        'detailed_items': detailed_items
+    }
+
 
 @app.route('/process_report', methods=['POST'])
 def process_report():
@@ -395,8 +481,69 @@ def scrape_and_process_report():
         traceback.print_exc()
         return jsonify({"error": f"伺服器內部發生未預期的錯誤: {str(e)}"}), 500
 
+# 修改 app.py 中的 save_report 函數
 @app.route('/save_report', methods=['POST'])
 def save_report():
+    data = request.get_json()
+    customer_id = data.get('customer_id')
+    year = data.get('year')
+    month = data.get('month')
+    report_summary = {
+        'customer_id': customer_id, 'year': year, 'month': month,
+        'total_revenue': data.get('total_revenue'), 
+        'head_office_revenue': data.get('head_office_revenue'), 
+        'branch_office_revenue': data.get('branch_office_revenue'),
+        'total_revenue_taxed': data.get('total_revenue_taxed'), 
+        'head_office_revenue_taxed': data.get('head_office_revenue_taxed'), 
+        'branch_office_revenue_taxed': data.get('branch_office_revenue_taxed')
+    }
+    if not all(v is not None for v in report_summary.values()):
+        return jsonify({"error": "傳送的總覽資料不完整"}), 400
+    try:
+        existing_report_response = supabase.table('reports').select('id').eq('customer_id', customer_id).eq('year', year).eq('month', month).execute()
+        if existing_report_response.data:
+            print(f"找到客戶 {customer_id} 在 {year}-{month} 的舊報告，準備刪除...")
+            for old_report in existing_report_response.data:
+                old_report_id = old_report['id']
+                supabase.table('report_items').delete().eq('report_id', old_report_id).execute()
+                supabase.table('reports').delete().eq('id', old_report_id).execute()
+            print(f"舊報告 {old_report_id} 已刪除。")
+        
+        summary_response = supabase.table('reports').insert(report_summary).execute()
+        new_report_id = summary_response.data[0]['id']
+        detailed_items_to_insert = []
+        source_detailed_items = data.get('detailed_items', [])
+        for item in source_detailed_items:
+            if all(k in item for k in ['item_name', 'category', 'unit_price', 'quantity', 'total_price']):
+                detailed_items_to_insert.append({
+                    'report_id': new_report_id, 
+                    'item_name': item['item_name'], 
+                    'category': item['category'], 
+                    'unit_price': str(item['unit_price']),
+                    'quantity': str(item['quantity']),
+                    'total_price': item['total_price'],
+                    'tab_source': item.get('tab_source', '款項明細')  # 新增：保存 tab_source
+                })
+        if detailed_items_to_insert:
+            supabase.table('report_items').insert(detailed_items_to_insert).execute()
+        return jsonify({"success": True, "message": "報告與明細已儲存"}), 201
+    except Exception as e:
+        print(f"儲存報告時發生錯誤: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# 修改 get_report_details 函數
+@app.route('/reports/<int:report_id>/details', methods=['GET'])
+def get_report_details(report_id):
+    try:
+        # 確保查詢包含 tab_source 欄位
+        response = supabase.table('report_items').select('*').eq('report_id', report_id).execute()
+        if hasattr(response, 'data'):
+            return jsonify(response.data)
+        else:
+            return jsonify(response[0])
+    except Exception as e:
+        print(f"查詢 report_id={report_id} 的明細時發生錯誤: {e}")
+        return jsonify({"error": str(e)}), 500
     data = request.get_json()
     customer_id = data.get('customer_id')
     year = data.get('year')
@@ -458,8 +605,6 @@ def get_all_reports():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/reports/<int:report_id>/details', methods=['GET'])
-def get_report_details(report_id):
     try:
         response = supabase.table('report_items').select('*').eq('report_id', report_id).execute()
         if hasattr(response, 'data'):

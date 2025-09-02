@@ -20,21 +20,244 @@ def clean_price(price_str):
         print(f"警告：價格轉換失敗，原始值為 '{price_str}'，已視為 0。")
         return 0.0
 
-def scrape_tab_data(page, viewport, tab_name, expected_count=0):
-    """爬取單個tab的資料"""
+def scrape_tab_data(page, tab_name, expected_count=0):
+    """爬取單個tab的資料 - 改進滾動策略確保抓取所有資料"""
     print(f"\n開始爬取【{tab_name}】的資料...")
     
-    # 不過濾重複，記錄所有資料（包含重複的）
+    # 重新找到當前Tab的viewport
+    try:
+        # 等待資料穩定載入
+        page.wait_for_timeout(3000)
+        
+        # 嘗試找到當前顯示的viewport
+        viewport = page.locator("div.ag-body-viewport").last
+        viewport.wait_for(state="visible", timeout=5000)
+    except:
+        print(f"警告：無法定位【{tab_name}】的viewport")
+        return []
+    
+    # 初始化變數
     all_bill_details = []
     group_header_count = 0
-    processed_row_indices = set()  # 只記錄已處理的row index，避免同一行重複處理
+    seen_exact_items = set()  # 記錄已見過的完全相同項目
+    
+    # 先獲取viewport的高度
+    try:
+        viewport_height = viewport.evaluate("el => el.clientHeight")
+        print(f"Viewport 高度: {viewport_height}px")
+    except:
+        viewport_height = 600  # 預設值
     
     # 滾動到最頂部開始
-    viewport.evaluate("el => el.scrollTop = 0")
-    page.wait_for_timeout(2000)
+    try:
+        viewport.evaluate("el => el.scrollTop = 0")
+        page.wait_for_timeout(2000)
+    except:
+        print(f"警告：無法滾動【{tab_name}】的viewport")
+    
+    # 使用更細緻的滾動策略
+    # 每次滾動較小的距離（50px），確保不會跳過任何資料
+    scroll_step = 50  # 每次滾動50像素
+    max_scroll_position = 10000  # 最大滾動位置
+    current_scroll = 0
+    
+    # 記錄連續沒有新資料的次數
+    no_new_data_count = 0
+    last_count = 0
+    
+    print(f"開始細緻滾動，步長: {scroll_step}px")
+    
+    while current_scroll < max_scroll_position:
+        try:
+            # 獲取當前可見的所有行
+            visible_rows = page.locator("div.ag-row-level-1").all()
+            
+            for row in visible_rows:
+                try:
+                    # 提取所有欄位資料
+                    cell_locators = row.locator('span.ag-cell-value')
+                    cell_count = cell_locators.count()
+                    
+                    if cell_count >= 6:  # 確保有足夠的欄位
+                        # 獲取所有六個欄位的值
+                        col0 = cell_locators.nth(0).text_content(timeout=500)  # 站所
+                        col1 = cell_locators.nth(1).text_content(timeout=500)  # 項目
+                        col2 = cell_locators.nth(2).text_content(timeout=500)  # 單價
+                        col3 = cell_locators.nth(3).text_content(timeout=500)  # 數量
+                        col4 = cell_locators.nth(4).text_content(timeout=500)  # 總價
+                        col5 = cell_locators.nth(5).text_content(timeout=500) if cell_count > 5 else ""  # 備註
+                        
+                        # 檢查是否為群組標題行
+                        if col1.strip() == "-":
+                            if "(" in col0 and ")" in col0:
+                                if group_header_count == 0:
+                                    print(f"  -> 跳過群組標題行：{col0.strip()}")
+                                group_header_count += 1
+                            continue
+                        
+                        # 檢查是否為有效資料
+                        if not col1.strip() or col1.strip() == "":
+                            continue
+                        
+                        # 建立完整的項目識別碼（包含所有欄位）
+                        item_signature = f"{col0.strip()}|{col1.strip()}|{col2.strip()}|{col3.strip()}|{col4.strip()}|{col5.strip()}"
+                        
+                        # 檢查是否已經處理過這個項目
+                        if item_signature in seen_exact_items:
+                            continue
+                        
+                        # 記錄這個項目
+                        seen_exact_items.add(item_signature)
+                        
+                        detail = {
+                            "tab_source": tab_name,
+                            "station": clean_text(col0),
+                            "item_name": clean_text(col1),
+                            "unit_price": clean_text(col2),
+                            "quantity": clean_text(col3),
+                            "total_price": clean_price(col4),
+                            "remark": clean_text(col5),
+                        }
+                        
+                        all_bill_details.append(detail)
+                        
+                        # 詳細輸出每筆抓到的資料
+                        print(f"  -> 第 {len(all_bill_details)} 筆: {col1.strip()[:30]} | 單價:{col2} | 數量:{col3} | 總價:{col4}")
+                        
+                except Exception as e:
+                    continue
+            
+            # 檢查是否有新資料
+            current_count = len(all_bill_details)
+            if current_count == last_count:
+                no_new_data_count += 1
+                # 如果連續多次沒有新資料，檢查是否已到底部
+                if no_new_data_count >= 20:  # 連續20次沒新資料（約1000px）
+                    # 嘗試滾動到最底部確認
+                    try:
+                        scroll_height = viewport.evaluate("el => el.scrollHeight")
+                        current_pos = viewport.evaluate("el => el.scrollTop")
+                        if current_pos >= scroll_height - viewport_height - 100:
+                            print(f"已到達底部，共抓取 {len(all_bill_details)} 筆")
+                            break
+                    except:
+                        pass
+            else:
+                no_new_data_count = 0
+                last_count = current_count
+            
+            # 滾動到下一個位置
+            current_scroll += scroll_step
+            viewport.evaluate(f"el => el.scrollTop = {current_scroll}")
+            page.wait_for_timeout(200)  # 等待資料載入
+            
+            # 每10次滾動輸出進度
+            if current_scroll % 500 == 0:
+                print(f"  滾動進度: {current_scroll}px, 已抓取 {len(all_bill_details)} 筆")
+                
+        except Exception as e:
+            print(f"滾動位置 {current_scroll} 時發生錯誤: {e}")
+            current_scroll += scroll_step
+            continue
+    
+    # 最後再次滾動到底部，確保沒有遺漏
+    print("執行最終檢查...")
+    try:
+        # 滾動到最底部
+        viewport.evaluate("el => el.scrollTop = el.scrollHeight")
+        page.wait_for_timeout(2000)
+        
+        # 再往上滾動一點然後往下，觸發虛擬滾動載入
+        viewport.evaluate("el => el.scrollTop = el.scrollHeight - 500")
+        page.wait_for_timeout(1000)
+        viewport.evaluate("el => el.scrollTop = el.scrollHeight")
+        page.wait_for_timeout(2000)
+        
+        # 最終檢查所有可見行
+        final_rows = page.locator("div.ag-row-level-1").all()
+        final_new_count = 0
+        
+        for row in final_rows:
+            try:
+                cell_locators = row.locator('span.ag-cell-value')
+                if cell_locators.count() >= 6:
+                    col0 = cell_locators.nth(0).text_content(timeout=500)
+                    col1 = cell_locators.nth(1).text_content(timeout=500)
+                    col2 = cell_locators.nth(2).text_content(timeout=500)
+                    col3 = cell_locators.nth(3).text_content(timeout=500)
+                    col4 = cell_locators.nth(4).text_content(timeout=500)
+                    col5 = cell_locators.nth(5).text_content(timeout=500) if cell_locators.count() > 5 else ""
+                    
+                    if col1.strip() != "-" and col1.strip() != "":
+                        item_signature = f"{col0.strip()}|{col1.strip()}|{col2.strip()}|{col3.strip()}|{col4.strip()}|{col5.strip()}"
+                        
+                        if item_signature not in seen_exact_items:
+                            seen_exact_items.add(item_signature)
+                            
+                            detail = {
+                                "tab_source": tab_name,
+                                "station": clean_text(col0),
+                                "item_name": clean_text(col1),
+                                "unit_price": clean_text(col2),
+                                "quantity": clean_text(col3),
+                                "total_price": clean_price(col4),
+                                "remark": clean_text(col5),
+                            }
+                            all_bill_details.append(detail)
+                            final_new_count += 1
+                            print(f"  -> 最終補充第 {len(all_bill_details)} 筆: {col1.strip()[:30]} | 單價:{col2} | 數量:{col3} | 總價:{col4}")
+            except:
+                continue
+        
+        if final_new_count > 0:
+            print(f"最終檢查新增了 {final_new_count} 筆資料")
+            
+    except Exception as e:
+        print(f"最終檢查時發生錯誤: {e}")
+    
+    print(f"【{tab_name}】爬取完成，共 {len(all_bill_details)} 筆")
+    
+    # 詳細顯示所有抓到的資料
+    if all_bill_details:
+        print(f"\n【{tab_name}】明細清單：")
+        for i, item in enumerate(all_bill_details, 1):
+            print(f"  {i}. {item['item_name']} | 單價:{item['unit_price']} | 數量:{item['quantity']} | 總價:{item['total_price']}")
+    
+    # 如果預期筆數和實際筆數不符，顯示警告
+    if expected_count > 0 and len(all_bill_details) != expected_count:
+        print(f"⚠️ 警告：預期 {expected_count} 筆，實際抓取 {len(all_bill_details)} 筆")
+    
+    return all_bill_details
+    """爬取單個tab的資料 - 避免完全重複但保留業務上的重複項目"""
+    print(f"\n開始爬取【{tab_name}】的資料...")
+    
+    # 重新找到當前Tab的viewport
+    try:
+        # 等待資料穩定載入
+        page.wait_for_timeout(3000)
+        
+        # 嘗試找到當前顯示的viewport
+        viewport = page.locator("div.ag-body-viewport").last
+        viewport.wait_for(state="visible", timeout=5000)
+    except:
+        print(f"警告：無法定位【{tab_name}】的viewport")
+        return []
+    
+    # 初始化變數
+    all_bill_details = []
+    group_header_count = 0
+    processed_row_indices = set()  # 記錄已處理的row index
+    seen_exact_items = set()  # 記錄已見過的完全相同項目（用於去除爬蟲重複）
+    
+    # 滾動到最頂部開始
+    try:
+        viewport.evaluate("el => el.scrollTop = 0")
+        page.wait_for_timeout(2000)
+    except:
+        print(f"警告：無法滾動【{tab_name}】的viewport")
     
     # 計算需要滾動的次數
-    scroll_iterations = max(20, (expected_count // 3) + 10) if expected_count > 0 else 50
+    scroll_iterations = max(30, (expected_count // 2) + 20) if expected_count > 0 else 60
     print(f"將進行 {scroll_iterations} 次滾動迭代")
     
     last_count = 0
@@ -42,156 +265,368 @@ def scrape_tab_data(page, viewport, tab_name, expected_count=0):
     
     # 逐步滾動並收集資料
     for scroll_count in range(scroll_iterations):
-        visible_rows = page.locator("div.ag-row-level-1").all()
+        try:
+            visible_rows = page.locator("div.ag-row-level-1").all()
+            
+            for row in visible_rows:
+                try:
+                    row_index = row.get_attribute("row-index")
+                    
+                    # 避免重複處理同一行
+                    if row_index in processed_row_indices:
+                        continue
+                    
+                    # 提取資料
+                    cell_locators = row.locator('span.ag-cell-value')
+                    cell_count = cell_locators.count()
+                    
+                    if cell_count >= 6:  # 確保有足夠的欄位
+                        # 獲取所有六個欄位的值
+                        col0 = cell_locators.nth(0).text_content(timeout=1000)  # 站所
+                        col1 = cell_locators.nth(1).text_content(timeout=1000)  # 項目
+                        col2 = cell_locators.nth(2).text_content(timeout=1000)  # 單價
+                        col3 = cell_locators.nth(3).text_content(timeout=1000)  # 數量
+                        col4 = cell_locators.nth(4).text_content(timeout=1000)  # 總價
+                        col5 = cell_locators.nth(5).text_content(timeout=1000) if cell_count > 5 else ""  # 備註
+                        
+                        # 檢查是否為群組標題行
+                        if col1.strip() == "-":
+                            if "(" in col0 and ")" in col0:
+                                if group_header_count == 0:
+                                    print(f"  -> 跳過群組標題行：{col0.strip()}")
+                                group_header_count += 1
+                            continue
+                        
+                        # 檢查是否為有效資料
+                        if not col1.strip() or col1.strip() == "":
+                            continue
+                        
+                        # 建立完整的項目識別碼（包含所有欄位）
+                        item_signature = f"{col0}|{col1}|{col2}|{col3}|{col4}|{col5}"
+                        
+                        # 檢查是否為完全相同的項目（爬蟲重複）
+                        if item_signature in seen_exact_items:
+                            print(f"  跳過完全重複的項目: {col1.strip()[:30]} (爬蟲重複)")
+                            continue
+                        
+                        # 記錄已處理
+                        processed_row_indices.add(row_index)
+                        seen_exact_items.add(item_signature)
+                        
+                        detail = {
+                            "tab_source": tab_name,  # 標記資料來源
+                            "station": clean_text(col0),
+                            "item_name": clean_text(col1),
+                            "unit_price": clean_text(col2),
+                            "quantity": clean_text(col3),
+                            "total_price": clean_price(col4),
+                            "remark": clean_text(col5),
+                        }
+                        
+                        all_bill_details.append(detail)
+                        
+                        # 進度提示
+                        if len(all_bill_details) == 1:
+                            print(f"  -> ✓ 第一筆資料: {col1.strip()}")
+                        elif len(all_bill_details) % 10 == 0:
+                            print(f"  -> 已抓取 {len(all_bill_details)} 筆")
+                            
+                except Exception as e:
+                    if scroll_count == 0:
+                        print(f"處理row時發生錯誤: {e}")
+                    continue
+            
+            # 檢查是否有新資料
+            current_count = len(all_bill_details)
+            if current_count == last_count:
+                no_new_data_count += 1
+                if no_new_data_count >= 5:
+                    print("連續5次滾動沒有新資料，可能已到底部")
+                    break
+            else:
+                no_new_data_count = 0
+                last_count = current_count
+            
+            # 滾動到下一個位置
+            scroll_position = (scroll_count + 1) * 100
+            viewport.evaluate(f"el => el.scrollTop = {scroll_position}")
+            page.wait_for_timeout(500)
+                
+        except Exception as e:
+            print(f"滾動迭代 {scroll_count} 時發生錯誤: {e}")
+            continue
+    
+    # 最後再滾動到底部確保沒有遺漏
+    try:
+        viewport.evaluate("el => el.scrollTop = el.scrollHeight")
+        page.wait_for_timeout(3000)
         
-        for row in visible_rows:
+        # 最終檢查所有行
+        final_rows = page.locator("div.ag-row-level-1").all()
+        for row in final_rows:
             try:
                 row_index = row.get_attribute("row-index")
                 
-                # 提取資料
+                if row_index in processed_row_indices:
+                    continue
+                    
                 cell_locators = row.locator('span.ag-cell-value')
-                cell_count = cell_locators.count()
-                
-                if cell_count >= 6:  # 確保有足夠的欄位
-                    # 獲取所有六個欄位的值
-                    col0 = cell_locators.nth(0).text_content(timeout=1000)  # 站所
-                    col1 = cell_locators.nth(1).text_content(timeout=1000)  # 項目
-                    col2 = cell_locators.nth(2).text_content(timeout=1000)  # 單價
-                    col3 = cell_locators.nth(3).text_content(timeout=1000)  # 數量
-                    col4 = cell_locators.nth(4).text_content(timeout=1000)  # 總價
-                    col5 = cell_locators.nth(5).text_content(timeout=1000) if cell_count > 5 else ""  # 備註
+                if cell_locators.count() >= 6:
+                    col0 = cell_locators.nth(0).text_content(timeout=500)
+                    col1 = cell_locators.nth(1).text_content(timeout=500)
+                    col2 = cell_locators.nth(2).text_content(timeout=500)
+                    col3 = cell_locators.nth(3).text_content(timeout=500)
+                    col4 = cell_locators.nth(4).text_content(timeout=500)
+                    col5 = cell_locators.nth(5).text_content(timeout=500) if cell_locators.count() > 5 else ""
                     
-                    # 檢查是否為群組標題行
-                    if col1.strip() == "-":
-                        if "(" in col0 and ")" in col0:
-                            if group_header_count == 0:
-                                print(f"  -> 跳過群組標題行：{col0.strip()}")
-                            group_header_count += 1
-                        continue
-                    
-                    # 檢查是否為有效資料
-                    if not col1.strip() or col1.strip() == "":
-                        continue
-                    
-                    # 建立唯一識別碼
-                    unique_id = f"{col1.strip()}_{col2.strip()}_{col3.strip()}_{col4.strip()}"
-                    
-                    # 檢查是否已處理過
-                    if unique_id in processed_items:
-                        continue
-                    
-                    # 這是新的資料，加入處理
-                    processed_items.add(unique_id)
-                    
-                    detail = {
-                        "tab_source": tab_name,  # 標記資料來源
-                        "station": clean_text(col0),
-                        "item_name": clean_text(col1),
-                        "unit_price": clean_text(col2),
-                        "quantity": clean_text(col3),
-                        "total_price": clean_price(col4),
-                        "remark": clean_text(col5),
-                    }
-                    
-                    all_bill_details.append(detail)
-                    
-                    # 進度提示
-                    if len(all_bill_details) == 1:
-                        print(f"  -> ✓ 第一筆資料: {col1.strip()}")
-                    elif len(all_bill_details) % 10 == 0:
-                        print(f"  -> 已抓取 {len(all_bill_details)} 筆")
+                    if col1.strip() != "-" and col1.strip() != "":
+                        # 建立完整的項目識別碼
+                        item_signature = f"{col0}|{col1}|{col2}|{col3}|{col4}|{col5}"
                         
-            except Exception as e:
-                if scroll_count == 0:
-                    print(f"處理row {row_index}時發生錯誤: {e}")
+                        # 檢查是否為完全相同的項目
+                        if item_signature not in seen_exact_items:
+                            processed_row_indices.add(row_index)
+                            seen_exact_items.add(item_signature)
+                            
+                            detail = {
+                                "tab_source": tab_name,
+                                "station": clean_text(col0),
+                                "item_name": clean_text(col1),
+                                "unit_price": clean_text(col2),
+                                "quantity": clean_text(col3),
+                                "total_price": clean_price(col4),
+                                "remark": clean_text(col5),
+                            }
+                            all_bill_details.append(detail)
+                            print(f"最終補充第 {len(all_bill_details)} 筆: {col1.strip()[:30]}")
+            except:
                 continue
-        
-        # 檢查是否有新資料
-        current_count = len(all_bill_details)
-        if current_count == last_count:
-            no_new_data_count += 1
-            if no_new_data_count >= 3:
-                print("連續3次滾動沒有新資料，可能已到底部")
-                break
-        else:
-            no_new_data_count = 0
-            last_count = current_count
-        
-        # 滾動到下一個位置
-        scroll_position = (scroll_count + 1) * 150
-        viewport.evaluate(f"el => el.scrollTop = {scroll_position}")
-        page.wait_for_timeout(300)
-        
-        # 如果已經抓到預期數量，提前結束
-        if expected_count > 0 and len(all_bill_details) >= expected_count:
-            print(f"已抓取到預期數量 {expected_count} 筆")
-            break
-    
-    # 最後再滾動到底部確保沒有遺漏
-    viewport.evaluate("el => el.scrollTop = el.scrollHeight")
-    page.wait_for_timeout(2000)
-    
-    # 最終檢查
-    final_rows = page.locator("div.ag-row-level-1").all()
-    for row in final_rows[-5:]:
-        try:
-            row_index = row.get_attribute("row-index")
-            
-            # 避免重複處理同一個row index
-            if row_index in processed_row_indices:
-                continue
-                
-            cell_locators = row.locator('span.ag-cell-value')
-            if cell_locators.count() >= 6:
-                col0 = cell_locators.nth(0).text_content(timeout=500)
-                col1 = cell_locators.nth(1).text_content(timeout=500)
-                col2 = cell_locators.nth(2).text_content(timeout=500)
-                col3 = cell_locators.nth(3).text_content(timeout=500)
-                col4 = cell_locators.nth(4).text_content(timeout=500)
-                col5 = cell_locators.nth(5).text_content(timeout=500) if cell_locators.count() > 5 else ""
-                
-                if col1.strip() != "-" and col1.strip() != "":
-                    # 記錄這個row已處理
-                    processed_row_indices.add(row_index)
-                    
-                    detail = {
-                        "tab_source": tab_name,
-                        "station": clean_text(col0),
-                        "item_name": clean_text(col1),
-                        "unit_price": clean_text(col2),
-                        "quantity": clean_text(col3),
-                        "total_price": clean_price(col4),
-                        "remark": clean_text(col5),
-                    }
-                    all_bill_details.append(detail)
-                    print(f"最終補充第 {len(all_bill_details)} 筆: {col1.strip()[:30]}")
-        except:
-            continue
+    except Exception as e:
+        print(f"最終檢查時發生錯誤: {e}")
     
     print(f"【{tab_name}】爬取完成，共 {len(all_bill_details)} 筆")
     
-    # 檢查是否有重複資料（僅供參考，不過濾）
-    unique_items = set()
-    duplicate_count = 0
+    # 統計項目名稱重複情況（但金額不同）
+    item_stats = {}
     for item in all_bill_details:
-        item_key = f"{item['item_name']}_{item['unit_price']}_{item['quantity']}_{item['total_price']}"
-        if item_key in unique_items:
-            duplicate_count += 1
-        else:
-            unique_items.add(item_key)
+        key = item['item_name']
+        if key not in item_stats:
+            item_stats[key] = []
+        item_stats[key].append({
+            'price': item['total_price'],
+            'unit_price': item['unit_price'],
+            'quantity': item['quantity']
+        })
     
-    if duplicate_count > 0:
-        print(f"  註：發現 {duplicate_count} 筆重複資料（已保留）")
+    # 顯示業務上的重複項目（名稱相同但其他欄位不同）
+    business_duplicates = []
+    for name, items in item_stats.items():
+        if len(items) > 1:
+            # 檢查是否為業務重複（至少有一個欄位不同）
+            unique_items = []
+            for item in items:
+                is_unique = True
+                for existing in unique_items:
+                    if (item['price'] == existing['price'] and 
+                        item['unit_price'] == existing['unit_price'] and 
+                        item['quantity'] == existing['quantity']):
+                        is_unique = False
+                        break
+                if is_unique:
+                    unique_items.append(item)
+            
+            if len(unique_items) > 1:
+                business_duplicates.append((name, unique_items))
+    
+    if business_duplicates:
+        print(f"  發現 {len(business_duplicates)} 個業務重複項目（名稱相同但內容不同）：")
+        for name, items in business_duplicates[:3]:  # 只顯示前3個
+            print(f"    - {name}: {len(items)} 個不同版本")
+            for i, item in enumerate(items[:2], 1):  # 顯示前2個版本
+                print(f"      版本{i}: 單價={item['unit_price']}, 數量={item['quantity']}, 總價={item['price']}")
+    
+    return all_bill_details
+    """爬取單個tab的資料 - 完全不去重版本"""
+    print(f"\n開始爬取【{tab_name}】的資料...")
+    
+    # 重新找到當前Tab的viewport
+    try:
+        # 等待資料穩定載入
+        page.wait_for_timeout(3000)
+        
+        # 嘗試找到當前顯示的viewport
+        viewport = page.locator("div.ag-body-viewport").last
+        viewport.wait_for(state="visible", timeout=5000)
+    except:
+        print(f"警告：無法定位【{tab_name}】的viewport")
+        return []
+    
+    # 初始化變數
+    all_bill_details = []
+    group_header_count = 0
+    processed_row_indices = set()  # 記錄已處理的row index
+    
+    # 滾動到最頂部開始
+    try:
+        viewport.evaluate("el => el.scrollTop = 0")
+        page.wait_for_timeout(2000)
+    except:
+        print(f"警告：無法滾動【{tab_name}】的viewport")
+    
+    # 計算需要滾動的次數 - 增加滾動次數確保完整性
+    scroll_iterations = max(50, (expected_count // 2) + 30) if expected_count > 0 else 80
+    print(f"將進行 {scroll_iterations} 次滾動迭代")
+    
+    last_count = 0
+    no_new_data_count = 0
+    
+    # 逐步滾動並收集資料
+    for scroll_count in range(scroll_iterations):
+        try:
+            visible_rows = page.locator("div.ag-row-level-1").all()
+            
+            for row in visible_rows:
+                try:
+                    row_index = row.get_attribute("row-index")
+                    
+                    # 避免重複處理同一行（基於row-index）
+                    if row_index in processed_row_indices:
+                        continue
+                    
+                    # 提取資料
+                    cell_locators = row.locator('span.ag-cell-value')
+                    cell_count = cell_locators.count()
+                    
+                    if cell_count >= 6:  # 確保有足夠的欄位
+                        # 獲取所有六個欄位的值
+                        col0 = cell_locators.nth(0).text_content(timeout=1000)  # 站所
+                        col1 = cell_locators.nth(1).text_content(timeout=1000)  # 項目
+                        col2 = cell_locators.nth(2).text_content(timeout=1000)  # 單價
+                        col3 = cell_locators.nth(3).text_content(timeout=1000)  # 數量
+                        col4 = cell_locators.nth(4).text_content(timeout=1000)  # 總價
+                        col5 = cell_locators.nth(5).text_content(timeout=1000) if cell_count > 5 else ""  # 備註
+                        
+                        # 檢查是否為群組標題行
+                        if col1.strip() == "-":
+                            if "(" in col0 and ")" in col0:
+                                if group_header_count == 0:
+                                    print(f"  -> 跳過群組標題行：{col0.strip()}")
+                                group_header_count += 1
+                            continue
+                        
+                        # 檢查是否為有效資料
+                        if not col1.strip() or col1.strip() == "":
+                            continue
+                        
+                        # 記錄這個row已處理
+                        processed_row_indices.add(row_index)
+                        
+                        detail = {
+                            "tab_source": tab_name,  # 重要：標記資料來源
+                            "station": clean_text(col0),
+                            "item_name": clean_text(col1),
+                            "unit_price": clean_text(col2),
+                            "quantity": clean_text(col3),
+                            "total_price": clean_price(col4),
+                            "remark": clean_text(col5),
+                        }
+                        
+                        all_bill_details.append(detail)
+                        
+                        # 進度提示
+                        if len(all_bill_details) == 1:
+                            print(f"  -> ✓ 第一筆資料: {col1.strip()}")
+                        elif len(all_bill_details) % 10 == 0:
+                            print(f"  -> 已抓取 {len(all_bill_details)} 筆")
+                            
+                except Exception as e:
+                    if scroll_count == 0:
+                        print(f"處理row {row_index if 'row_index' in locals() else 'unknown'}時發生錯誤: {e}")
+                    continue
+            
+            # 檢查是否有新資料
+            current_count = len(all_bill_details)
+            if current_count == last_count:
+                no_new_data_count += 1
+                if no_new_data_count >= 5:
+                    print("連續5次滾動沒有新資料，可能已到底部")
+                    break
+            else:
+                no_new_data_count = 0
+                last_count = current_count
+            
+            # 滾動到下一個位置 - 使用較小的步長確保不遺漏
+            scroll_position = (scroll_count + 1) * 80  # 減小滾動步長
+            viewport.evaluate(f"el => el.scrollTop = {scroll_position}")
+            page.wait_for_timeout(500)  # 等待資料載入
+                
+        except Exception as e:
+            print(f"滾動迭代 {scroll_count} 時發生錯誤: {e}")
+            continue
+    
+    # 最後再滾動到底部確保沒有遺漏
+    try:
+        viewport.evaluate("el => el.scrollTop = el.scrollHeight")
+        page.wait_for_timeout(3000)
+        
+        # 最終檢查所有行
+        final_rows = page.locator("div.ag-row-level-1").all()
+        for row in final_rows:
+            try:
+                row_index = row.get_attribute("row-index")
+                
+                if row_index in processed_row_indices:
+                    continue
+                    
+                cell_locators = row.locator('span.ag-cell-value')
+                if cell_locators.count() >= 6:
+                    col0 = cell_locators.nth(0).text_content(timeout=500)
+                    col1 = cell_locators.nth(1).text_content(timeout=500)
+                    col2 = cell_locators.nth(2).text_content(timeout=500)
+                    col3 = cell_locators.nth(3).text_content(timeout=500)
+                    col4 = cell_locators.nth(4).text_content(timeout=500)
+                    col5 = cell_locators.nth(5).text_content(timeout=500) if cell_locators.count() > 5 else ""
+                    
+                    if col1.strip() != "-" and col1.strip() != "":
+                        processed_row_indices.add(row_index)
+                        
+                        detail = {
+                            "tab_source": tab_name,
+                            "station": clean_text(col0),
+                            "item_name": clean_text(col1),
+                            "unit_price": clean_text(col2),
+                            "quantity": clean_text(col3),
+                            "total_price": clean_price(col4),
+                            "remark": clean_text(col5),
+                        }
+                        all_bill_details.append(detail)
+                        print(f"最終補充第 {len(all_bill_details)} 筆: {col1.strip()[:30]}")
+            except:
+                continue
+    except Exception as e:
+        print(f"最終檢查時發生錯誤: {e}")
+    
+    print(f"【{tab_name}】爬取完成，共 {len(all_bill_details)} 筆")
+    
+    # 統計重複項目
+    item_stats = {}
+    for item in all_bill_details:
+        key = item['item_name']
+        if key not in item_stats:
+            item_stats[key] = []
+        item_stats[key].append(item['total_price'])
+    
+    # 顯示有重複的項目
+    duplicates = [(name, prices) for name, prices in item_stats.items() if len(prices) > 1]
+    if duplicates:
+        print(f"  發現 {len(duplicates)} 個重複項目名稱（已全部保留）：")
+        for name, prices in duplicates[:5]:  # 只顯示前5個
+            print(f"    - {name}: 出現 {len(prices)} 次，價格分別為 {prices[:3]}...")
     
     return all_bill_details
 
 def get_expected_count_from_group_header(page, tab_name=""):
-    """從群組標題行獲取預期筆數
-    
-    Args:
-        page: Playwright page對象
-        tab_name: 當前Tab名稱，用於除錯輸出
-    """
+    """從群組標題行獲取預期筆數"""
     expected_count = 0
     
     print(f"正在尋找{tab_name}的群組標題行...")
@@ -253,7 +688,7 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
     """
     all_tabs_data = {
         "款項明細": [],
-        "其他應該款": [],
+        "其他應退款": [],
         "其他應收款": []
     }
     total_expected = 0
@@ -355,177 +790,9 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
             
             # 獲取預期筆數
             expected_count_tab1 = get_expected_count_from_group_header(page, "款項明細")
-            if expected_count_tab1 == 0:
-                print("⚠️ 警告：無法從群組標題行獲取預期筆數")
             
-            # 找到viewport
-            viewport = None
-            try:
-                viewports = page.locator("div.ag-body-viewport")
-                if viewports.count() > 1:
-                    viewport = viewports.nth(1)
-                    print(f"找到 {viewports.count()} 個viewport，使用第2個")
-                elif viewports.count() == 1:
-                    viewport = viewports.first
-                    print("只找到1個viewport")
-            except:
-                pass
-            
-            if viewport is None:
-                try:
-                    viewport = page.locator("div.ag-body-viewport:has(div.ag-row-level-1)").first
-                    print("通過ag-row-level-1找到viewport")
-                except:
-                    viewport = page.locator("div.ag-body-viewport").last
-                    print("使用最後一個viewport作為備選")
-            
-            viewport.wait_for(state="visible", timeout=5000)
-            
-            # 爬取第一個tab的資料 - 直接使用內聯代碼處理第一個Tab
-            print("\n開始爬取【款項明細】的資料...")
-            
-            # 不過濾重複，記錄所有資料
-            tab1_data = []
-            group_header_count = 0
-            processed_row_indices = set()  # 只記錄已處理的row index
-            
-            # 滾動到最頂部開始
-            viewport.evaluate("el => el.scrollTop = 0")
-            page.wait_for_timeout(2000)
-            
-            # 計算需要滾動的次數
-            scroll_iterations = max(20, (expected_count_tab1 // 3) + 10) if expected_count_tab1 > 0 else 50
-            print(f"將進行 {scroll_iterations} 次滾動迭代")
-            
-            last_count = 0
-            no_new_data_count = 0
-            
-            # 逐步滾動並收集資料
-            for scroll_count in range(scroll_iterations):
-                visible_rows = page.locator("div.ag-row-level-1").all()
-                
-                for row in visible_rows:
-                    try:
-                        row_index = row.get_attribute("row-index")
-                        
-                        # 避免同一個row在同一次滾動中被重複處理
-                        if row_index in processed_row_indices:
-                            continue
-                        
-                        # 提取資料
-                        cell_locators = row.locator('span.ag-cell-value')
-                        cell_count = cell_locators.count()
-                        
-                        if cell_count >= 6:  # 確保有足夠的欄位
-                            # 獲取所有六個欄位的值
-                            col0 = cell_locators.nth(0).text_content(timeout=1000)  # 站所
-                            col1 = cell_locators.nth(1).text_content(timeout=1000)  # 項目
-                            col2 = cell_locators.nth(2).text_content(timeout=1000)  # 單價
-                            col3 = cell_locators.nth(3).text_content(timeout=1000)  # 數量
-                            col4 = cell_locators.nth(4).text_content(timeout=1000)  # 總價
-                            col5 = cell_locators.nth(5).text_content(timeout=1000) if cell_count > 5 else ""  # 備註
-                            
-                            # 檢查是否為群組標題行
-                            if col1.strip() == "-":
-                                if "(" in col0 and ")" in col0:
-                                    if group_header_count == 0:
-                                        print(f"  -> 跳過群組標題行：{col0.strip()}")
-                                    group_header_count += 1
-                                continue
-                            
-                            # 檢查是否為有效資料
-                            if not col1.strip() or col1.strip() == "":
-                                continue
-                            
-                            # 記錄這個row已處理
-                            processed_row_indices.add(row_index)
-                            
-                            # 不檢查重複，直接加入資料
-                            detail = {
-                                "tab_source": "款項明細",
-                                "station": clean_text(col0),
-                                "item_name": clean_text(col1),
-                                "unit_price": clean_text(col2),
-                                "quantity": clean_text(col3),
-                                "total_price": clean_price(col4),
-                                "remark": clean_text(col5),
-                            }
-                            
-                            tab1_data.append(detail)
-                            
-                            # 進度提示
-                            if len(tab1_data) == 1:
-                                print(f"  -> ✓ 第一筆資料: {col1.strip()}")
-                            elif len(tab1_data) % 10 == 0:
-                                print(f"  -> 已抓取 {len(tab1_data)} 筆")
-                                    
-                    except Exception as e:
-                        if scroll_count == 0:
-                            print(f"處理row {row_index}時發生錯誤: {e}")
-                        continue
-                
-                # 檢查是否有新資料
-                current_count = len(tab1_data)
-                if current_count == last_count:
-                    no_new_data_count += 1
-                    if no_new_data_count >= 3:
-                        print("連續3次滾動沒有新資料，可能已到底部")
-                        break
-                else:
-                    no_new_data_count = 0
-                    last_count = current_count
-                
-                # 滾動到下一個位置
-                scroll_position = (scroll_count + 1) * 150
-                viewport.evaluate(f"el => el.scrollTop = {scroll_position}")
-                page.wait_for_timeout(300)
-                
-                # 如果已經抓到預期數量，提前結束
-                if expected_count_tab1 > 0 and len(tab1_data) >= expected_count_tab1:
-                    print(f"已抓取到預期數量 {expected_count_tab1} 筆")
-                    break
-            
-            # 最後再滾動到底部確保沒有遺漏
-            viewport.evaluate("el => el.scrollTop = el.scrollHeight")
-            page.wait_for_timeout(2000)
-            
-            # 最終檢查
-            final_rows = page.locator("div.ag-row-level-1").all()
-            for row in final_rows[-5:]:
-                try:
-                    row_index = row.get_attribute("row-index")
-                    
-                    if row_index in processed_row_indices:
-                        continue
-                        
-                    cell_locators = row.locator('span.ag-cell-value')
-                    if cell_locators.count() >= 6:
-                        col0 = cell_locators.nth(0).text_content(timeout=500)
-                        col1 = cell_locators.nth(1).text_content(timeout=500)
-                        col2 = cell_locators.nth(2).text_content(timeout=500)
-                        col3 = cell_locators.nth(3).text_content(timeout=500)
-                        col4 = cell_locators.nth(4).text_content(timeout=500)
-                        col5 = cell_locators.nth(5).text_content(timeout=500) if cell_locators.count() > 5 else ""
-                        
-                        if col1.strip() != "-" and col1.strip() != "":
-                            processed_row_indices.add(row_index)
-                            
-                            detail = {
-                                "tab_source": "款項明細",
-                                "station": clean_text(col0),
-                                "item_name": clean_text(col1),
-                                "unit_price": clean_text(col2),
-                                "quantity": clean_text(col3),
-                                "total_price": clean_price(col4),
-                                "remark": clean_text(col5),
-                            }
-                            tab1_data.append(detail)
-                            print(f"最終補充第 {len(tab1_data)} 筆: {col1.strip()[:30]}")
-                except:
-                    continue
-            
-            print(f"【款項明細】爬取完成，共 {len(tab1_data)} 筆")
-            
+            # 爬取第一個tab的資料
+            tab1_data = scrape_tab_data(page, "款項明細", expected_count_tab1)
             all_tabs_data["款項明細"] = tab1_data
             total_expected += expected_count_tab1
             total_actual += len(tab1_data)
@@ -539,13 +806,12 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
             tab2_success = False
             try:
                 # 更精確的定位第二個tab按鈕
-                # 先找到包含三個tab的ul元素，再定位其中的第二個li
                 tab_container = page.locator('ul.nav.nav-pills').first
-                tab2_button = tab_container.locator('li.nav-item').nth(1)  # 0-based index, 所以1是第二個
+                tab2_button = tab_container.locator('li.nav-item').nth(1)  # 0-based index
                 
-                # 或者直接用文字定位（根據實際顯示的文字）
+                # 或者直接用文字定位
                 if tab2_button.count() == 0:
-                    tab2_button = page.locator('li.nav-item:has-text("其他應退款")')
+                    tab2_button = page.locator('li.nav-item:has-text("其他應退款"), li.nav-item:has-text("其他應該款")')
                 
                 if tab2_button.count() > 0:
                     tab2_button.click()
@@ -555,14 +821,9 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
                 else:
                     print("❌ 找不到「其他應退款」Tab按鈕")
                 
-                
                 if tab2_success:
-                    # 等待新tab資料載入
-                    page.wait_for_timeout(2000)
-                    
-                    # 檢查是否需要展開群組（Tab2可能預設收合）
+                    # 檢查是否需要展開群組
                     try:
-                        # 尋找展開按鈕（如果存在）
                         expand_buttons = page.locator('svg[role="button"][aria-expanded="false"]').all()
                         if expand_buttons:
                             print(f"發現 {len(expand_buttons)} 個收合的群組，嘗試展開...")
@@ -576,7 +837,7 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
                     expected_count_tab2 = get_expected_count_from_group_header(page, "其他應退款")
                     
                     # 爬取第二個tab的資料
-                    tab2_data = scrape_tab_data(page, viewport, "其他應退款", expected_count_tab2)
+                    tab2_data = scrape_tab_data(page, "其他應退款", expected_count_tab2)
                     all_tabs_data["其他應退款"] = tab2_data
                     total_expected += expected_count_tab2
                     total_actual += len(tab2_data)
@@ -584,7 +845,6 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
             except Exception as e:
                 print(f"❌ 爬取「其他應退款」Tab時發生錯誤: {e}")
                 all_tabs_data["其他應退款"] = []
-                all_tabs_data["其他應退款_error"] = str(e)
             
             # === 爬取第三個Tab: 其他應收款 ===
             print("\n" + "="*60)
@@ -596,7 +856,7 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
             try:
                 # 更精確的定位第三個tab按鈕
                 tab_container = page.locator('ul.nav.nav-pills').first
-                tab3_button = tab_container.locator('li.nav-item').nth(2)  # 0-based index, 所以2是第三個
+                tab3_button = tab_container.locator('li.nav-item').nth(2)  # 0-based index
                 
                 # 或者直接用文字定位
                 if tab3_button.count() == 0:
@@ -611,12 +871,8 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
                     print("❌ 找不到「其他應收款」Tab按鈕")
                 
                 if tab3_success:
-                    # 等待新tab資料載入
-                    page.wait_for_timeout(2000)
-                    
-                    # 檢查是否需要展開群組（Tab3可能預設收合）
+                    # 檢查是否需要展開群組
                     try:
-                        # 尋找展開按鈕（如果存在）
                         expand_buttons = page.locator('svg[role="button"][aria-expanded="false"]').all()
                         if expand_buttons:
                             print(f"發現 {len(expand_buttons)} 個收合的群組，嘗試展開...")
@@ -630,7 +886,7 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
                     expected_count_tab3 = get_expected_count_from_group_header(page, "其他應收款")
                     
                     # 爬取第三個tab的資料
-                    tab3_data = scrape_tab_data(page, viewport, "其他應收款", expected_count_tab3)
+                    tab3_data = scrape_tab_data(page, "其他應收款", expected_count_tab3)
                     all_tabs_data["其他應收款"] = tab3_data
                     total_expected += expected_count_tab3
                     total_actual += len(tab3_data)
@@ -638,54 +894,32 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
             except Exception as e:
                 print(f"❌ 爬取「其他應收款」Tab時發生錯誤: {e}")
                 all_tabs_data["其他應收款"] = []
-                all_tabs_data["其他應收款_error"] = str(e)
             
             # === 合併所有資料 ===
             all_bill_details = []
             tab_errors = []  # 記錄錯誤的Tab
+            failed_tabs = []
             
             for tab_name, tab_data in all_tabs_data.items():
-                if "_error" not in tab_name:  # 跳過錯誤訊息
+                if len(tab_data) == 0:
+                    failed_tabs.append(tab_name)
+                else:
                     all_bill_details.extend(tab_data)
-                    # 檢查是否有對應的錯誤
-                    if f"{tab_name}_error" in all_tabs_data:
-                        tab_errors.append({
-                            "tab": tab_name,
-                            "error": all_tabs_data[f"{tab_name}_error"]
-                        })
             
             # === 輸出詳細統計 ===
             print("\n" + "="*80)
             print("【所有Tab資料統計】")
             print("="*80)
             
-            # 顯示成功爬取的Tab
-            successful_tabs = []
-            failed_tabs = []
-            
             for tab_name in ["款項明細", "其他應退款", "其他應收款"]:
                 if tab_name in all_tabs_data:
                     tab_data = all_tabs_data[tab_name]
                     if len(tab_data) > 0:
-                        successful_tabs.append(tab_name)
                         print(f"✅ {tab_name}: {len(tab_data)} 筆")
                         tab_total = sum(item.get('total_price', 0) for item in tab_data)
                         print(f"    金額小計: ${tab_total:,.2f}")
                     else:
-                        # 檢查是否有錯誤
-                        if f"{tab_name}_error" in all_tabs_data:
-                            failed_tabs.append(tab_name)
-                            print(f"❌ {tab_name}: 爬取失敗")
-                            print(f"    錯誤原因: {all_tabs_data[f'{tab_name}_error'][:100]}...")
-                        else:
-                            print(f"⚠️ {tab_name}: 0 筆（可能沒有資料）")
-            
-            print("-"*80)
-            print(f"總計: {len(all_bill_details)} 筆資料")
-            
-            if failed_tabs:
-                print(f"\n⚠️ 警告：以下Tab爬取失敗：{', '.join(failed_tabs)}")
-                print("建議：請手動檢查這些Tab是否有資料，或重新執行爬取")
+                        print(f"⚠️ {tab_name}: 0 筆（可能沒有資料）")
             
             print("-"*80)
             print(f"總計: {len(all_bill_details)} 筆資料")
@@ -702,36 +936,15 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
                 print(f"預期總筆數：{total_expected} 筆")
                 print(f"實際抓取總筆數：{total_actual} 筆")
                 print(f"完成率：{completion_rate:.1f}%")
-                
-                if total_actual == total_expected:
-                    print("✅ 所有Tab筆數完全相符！")
-                elif total_actual > total_expected:
-                    print(f"⚠️ 警告：總抓取筆數超過預期 {total_actual - total_expected} 筆")
-                else:
-                    print(f"⚠️ 警告：缺少 {total_expected - total_actual} 筆資料")
-            else:
-                print("【注意】無法獲取預期筆數，無法進行完整性驗證")
             
             print("="*80 + "\n")
             
             if not all_bill_details:
                 raise ValueError("未能解析任何帳單明細")
             
-            # 返回結果（移除tab_source欄位，因為前端可能不需要）
-            clean_details = []
-            for item in all_bill_details:
-                clean_item = {
-                    "station": item["station"],
-                    "item_name": item["item_name"],
-                    "unit_price": item["unit_price"],
-                    "quantity": item["quantity"],
-                    "total_price": item["total_price"],
-                    "remark": item["remark"]
-                }
-                clean_details.append(clean_item)
-            
+            # 返回結果（保留tab_source欄位，前端需要它來分類）
             result = {
-                'details': clean_details,
+                'details': all_bill_details,  # 保留tab_source
                 'expected_count': total_expected if total_expected > 0 else None,
                 'actual_count': total_actual,
                 'completion_rate': completion_rate if total_expected > 0 else 0,
@@ -740,8 +953,7 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
                     '其他應退款': len(all_tabs_data.get("其他應退款", [])),
                     '其他應收款': len(all_tabs_data.get("其他應收款", []))
                 },
-                'tab_errors': tab_errors if tab_errors else None,  # 新增：錯誤資訊
-                'failed_tabs': failed_tabs if failed_tabs else None  # 新增：失敗的Tab列表
+                'failed_tabs': failed_tabs if failed_tabs else None  # 失敗的Tab列表
             }
             return result
 
@@ -759,7 +971,7 @@ def scrape_monthly_bill(year: int, month: int, customer_name: str) -> dict:
 if __name__ == '__main__':
     target_year = 2025
     target_month = 7
-    target_customer = "韓商鉑嵐"
+    target_customer = "韓商鉑岵"
 
     print("--- 開始執行多Tab調試測試 ---")
     try:
@@ -782,6 +994,7 @@ if __name__ == '__main__':
         print("\n【資料預覽】")
         for i, detail in enumerate(details[:3], 1):
             print(f"\n第 {i} 筆:")
+            print(f"  Tab來源: {detail.get('tab_source', '未知')}")  # 顯示tab_source
             print(f"  站所: {detail['station']}")
             print(f"  項目: {detail['item_name']}")
             print(f"  單價: {detail['unit_price']}")
